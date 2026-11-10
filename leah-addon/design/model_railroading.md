@@ -125,6 +125,14 @@ Step 2 of the safe ladder. Decided by Claude (the owner can overrule):
 - **Both boards on USB** to the PC, which powers them; no other supply connected.
 - The owner's account needs the `dialout` group to open the ports (`sudo usermod -aG dialout $USER`, then
   log out and in).
+- **The app must make that clear to its user** (the owner, 2026-11-10: end users won't know about
+  `dialout`). `dcc_base("/dev/ttyACM0")` refused by the system gives a `hardware_error` of kind
+  `"access_denied"` (as `serial_port` does) in plain words. The example app catches it and shows a
+  window explaining it without jargon ("Linux needs your permission before apps can talk to the
+  board"), with a **Give access** button that runs `fix_device_access("serial")` (it asks for the
+  password) when the devices addon is there, the command to type otherwise, and then **log out and back
+  in**, which the window says plainly. The board list shows a board that is plugged in but not
+  allowed as such, not as missing.
 
 ## Rules to keep (agreed in principle)
 
