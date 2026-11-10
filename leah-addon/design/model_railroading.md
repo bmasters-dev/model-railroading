@@ -111,6 +111,21 @@ Decided by Claude (the standing policy; the owner can overrule each):
   decoder hears anything (`heard: false`).
 - No events yet: a window watching the decoder reads `decoder()` on a timer (the example).
 
+## Stage 1b: two boards, no track power (wiring decided 2026-11-10)
+
+Step 2 of the safe ladder. Decided by Claude (the owner can overrule):
+
+- **The Mega makes the signal** on **pin 12** (Timer1's output OC1B, so the pulses come from the
+  hardware timer, not from code), with **no shield** on it. The motor shield stays in its bag until step 3.
+- **A classic Uno or a Nano reads it back** on **pin D2** (INT0, an interrupt on every edge), measures
+  each half-bit, decodes the packets, and sends them to Leah over USB. Not the Uno R4 WiFi: its chip is
+  different, and the classic ATmega328P board is the one the reader is written for.
+- **Two wires**: Mega pin 12 → a **1 kΩ resistor** → the reader's D2 (the resistor keeps either board safe
+  if a pin is set wrong), and Mega GND → the reader's GND. Both boards 5 V, so no level shifting.
+- **Both boards on USB** to the PC, which powers them; no other supply connected.
+- The owner's account needs the `dialout` group to open the ports (`sudo usermod -aG dialout $USER`, then
+  log out and in).
+
 ## Rules to keep (agreed in principle)
 
 - **Emergency stop** always works, from code and from every throttle control.
