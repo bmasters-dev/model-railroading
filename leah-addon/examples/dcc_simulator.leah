@@ -1,0 +1,132 @@
+` A DCC throttle on a simulated base station: no board, no track power, nothing that can hurt a
+` locomotive. The throttle sends real DCC packets; the simulated decoder reads them back from their
+` signal, and the train on the oval moves as that decoder understood them. The list below shows each
+` packet, its bytes, and its bits as they go onto the rails.
+
+$base = dcc_base(simulate: true)
+$loco = locomotive(3)
+$angle = 0
+
+$win = window(title: "DCC simulator", width: 780, height: 560, minimum_width: 700, minimum_height: 500)
+
+` -- the track and the train, as the decoder understood the packets --
+$track = canvas(left: 20, top: 20, width: 480, height: 300, lock_right: true)
+$win.add($track)
+$track.on_paint = function($g) {
+    global $angle, $base, $loco
+    $w = $g.width
+    $h = $g.height
+    $g.drawing_color = color_group(light: "#F3F1EA", dark: "#25272B")
+    $g.fill_rectangle(0, 0, $w, $h)
+    ` the rails
+    $g.pen_size = 10
+    $g.drawing_color = "#6B5B4B"
+    $g.draw_oval(40, 40, $w - 80, $h - 80)
+    $g.pen_size = 2
+    $g.drawing_color = "#B9BEC5"
+    $g.draw_oval(36, 36, $w - 72, $h - 72)
+    $g.draw_oval(44, 44, $w - 88, $h - 88)
+    ` the train, where the decoder has taken it
+    $cx = $w / 2
+    $cy = $h / 2
+    $rx = ($w - 80) / 2
+    $ry = ($h - 80) / 2
+    $x = $cx + $rx * cosine($angle)
+    $y = $cy + $ry * sine($angle)
+    $state = $base.decoder($loco.address)
+    $lit = $state != null and $state["functions"][0] and $base.power
+    if $lit {
+        ` the headlight's beam, ahead of the train
+        $ahead = if $state["direction"] == "forward" then 14 else -14
+        $g.drawing_color = "#FFE58A80"
+        $g.fill_oval($cx + $rx * cosine($angle + $ahead) - 14, $cy + $ry * sine($angle + $ahead) - 14, 28, 28)
+    }
+    $g.drawing_color = if $base.power then "#2F7BE5" else "#8C95A3"
+    $g.fill_oval($x - 13, $y - 13, 26, 26)
+    $g.drawing_color = "#FFFFFF"
+    $g.bold = true
+    $g.font_size = 11
+    $g.draw_text_box(to_text($loco.address), $x - 13, $y - 13, 26, 26, align: "center", vertical_align: "middle")
+    ` what the decoder understood
+    $g.bold = false
+    $g.drawing_color = color_group(light: "#2E3646", dark: "#E8EAEE")
+    $words = if $state == null then "the decoder hasn't heard anything yet" else "the decoder: speed " + $state["speed"] + ", " + $state["direction"] + ", headlight " + (if $state["functions"][0] then "on" else "off")
+    $g.draw_text($words, 70, $h / 2 - 8)
+    if not $base.power {
+        $g.drawing_color = "#E0393E"
+        $g.draw_text("track power off: no decoder hears anything", 70, $h / 2 + 12)
+    }
+}
+
+` -- the throttle --
+$x = 520
+$power = switch(left: $x, top: 20, text: "Track power", lock_left: false, lock_right: true)
+$win.add($power)
+$power.on_value_changed = function() {
+    global $base, $power
+    $base.power = $power.value
+}
+
+$speed_label = label(left: $x, top: 64, width: 240, text: "Speed 0 of 126", lock_left: false, lock_right: true)
+$win.add($speed_label)
+$throttle = slider(left: $x, top: 88, width: 240, minimum_value: 0, maximum_value: 126, lock_left: false, lock_right: true)
+$win.add($throttle)
+$throttle.on_value_changed = function() {
+    global $loco, $throttle, $speed_label
+    $loco.speed = round($throttle.value)
+    $speed_label.text = "Speed " + $loco.speed + " of 126"
+}
+
+$reverse = checkbox(left: $x, top: 130, text: "Reverse", lock_left: false, lock_right: true)
+$win.add($reverse)
+$reverse.on_value_changed = function() {
+    global $loco, $reverse
+    $loco.direction = if $reverse.value then "reverse" else "forward"
+}
+
+$headlight = checkbox(left: $x, top: 160, text: "Headlight (F0)", lock_left: false, lock_right: true)
+$win.add($headlight)
+$headlight.on_value_changed = function() {
+    global $loco, $headlight
+    $loco.set_function(0, $headlight.value)
+}
+
+$stop = button(left: $x, top: 210, width: 240, height: 44, text: "Emergency stop", lock_left: false, lock_right: true)
+$win.add($stop)
+$stop.on_click = function() {
+    global $base, $throttle
+    $base.emergency_stop()
+    $throttle.value = 0
+}
+
+` -- the packets, as they go onto the rails --
+$packets = list_box(left: 20, top: 340, width: 740, height: 150, column_count: 3, has_header: true, column_widths: "150, *, 70", lock_right: true, lock_bottom: true)
+$packets.headers = ["Bytes", "Meaning", "Heard"]
+$win.add($packets)
+$bits = label(left: 20, top: 500, width: 740, text: "Each packet's bits show here.", lock_top: false, lock_bottom: true, lock_right: true)
+$win.add($bits)
+$shown = ""
+
+` Every 40 ms: the train moves as the decoder's speed and direction say, and new packets are listed.
+$clock = timer(period: 40, run_mode: "multiple")
+$clock.on_run = function() {
+    global $angle, $base, $loco, $track, $packets, $bits, $shown
+    $state = $base.decoder($loco.address)
+    if $state != null and $base.power {
+        $step = $state["speed"] / 126 * 4
+        $angle = $angle + (if $state["direction"] == "forward" then $step else -$step)
+    }
+    $track.refresh()
+    $sent = $base.packets
+    $now = if count($sent) == 0 then "" else count($sent) + " " + last($sent)["meaning"]
+    if $now != $shown {
+        $packets.remove_all_rows()
+        foreach reverse($sent) as $p {
+            $packets.add_row($p["bytes"], $p["meaning"], if $p["heard"] then "yes" else "no")
+        }
+        $bits.text = "Bits of the last packet: " + last($sent)["bits"]
+        $shown = $now
+    }
+}
+
+$win.show()

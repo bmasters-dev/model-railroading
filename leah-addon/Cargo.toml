@@ -1,0 +1,19 @@
+# The model railroading addon for Leah: a 3rd-party addon, built with Leah's addon kit, so it keeps
+# working with later versions of Leah and is installed by its address:
+#     leah --install-addon https://github.com/bmasters-dev/model-railroading
+[package]
+name = "leah-addon-model-railroading"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+edition = "2024"
+
+[lib]
+name = "leah_addon_model_railroading"
+path = "src/lib.rs"
+# One library file, which Leah's 3rd-party addons folder holds as `model_railroading.so`.
+crate-type = ["cdylib"]
+
+[dependencies]
+# The addon kit, from Leah's source beside this repository (~/Leah_Dev/kit) until the kit is
+# published (bmasters-dev/leah-language#720).
+leah-addon-kit = { path = "../../Leah_Dev/kit" }

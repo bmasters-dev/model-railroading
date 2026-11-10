@@ -1,0 +1,23 @@
+# Build output
+target/
+
+# Editors' leftovers
+*~
+*.swp
+*.kate-swp
+.directory
+
+# Secrets never live here (they are in ~/Leah_Secrets); these refuse the usual secret files.
+.env
+.env.*
+*.key
+*.pem
+*secret*.txt
+*token*.txt
+*_key.txt
+
+# Anything in a folder named `private` never goes to GitHub (the owner's own material).
+private/
+
+# What a release puts together before uploading it.
+dist/
