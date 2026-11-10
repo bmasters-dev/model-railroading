@@ -207,3 +207,29 @@ fn the_dcc_simulator_example_runs_its_train() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stdout.contains("[\"address\": 3, \"long\": false, \"speed\": 60, \"direction\": \"forward\", \"functions\": [true,"), "{stdout}\n{stderr}");
 }
+
+#[test]
+fn the_examples_page_gives_its_documented_output() {
+    // docs/examples.md: each ```leah block is run, and what it prints compared with the Output block
+    // under it (as Leah's own guide examples are).
+    let page = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples.md")).unwrap();
+    let mut lines = page.lines().peekable();
+    let mut checked = 0;
+    while let Some(line) = lines.next() {
+        if line.trim() != "```leah" {
+            continue;
+        }
+        let code: Vec<&str> = lines.by_ref().take_while(|l| l.trim() != "```").collect();
+        while lines.peek().is_some_and(|l| l.trim().is_empty()) {
+            lines.next();
+        }
+        assert_eq!(lines.next().map(str::trim), Some("Output:"), "an example has no Output block:\n{}", code.join("\n"));
+        assert_eq!(lines.next().map(str::trim), Some("```"));
+        let wanted: Vec<&str> = lines.by_ref().take_while(|l| l.trim() != "```").collect();
+        let run = run(&format!("example{checked}"), &(code.join("\n") + "\n"));
+        assert!(run.success, "{}\n{}", code.join("\n"), run.stderr);
+        assert_eq!(run.stdout.trim_end(), wanted.join("\n").trim_end(), "{}", code.join("\n"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no examples found");
+}
