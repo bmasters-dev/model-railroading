@@ -29,7 +29,7 @@
 //   X                  everything dropped, power off
 //   ?                  "STATE power on places 2 shield yes current 25 limit 1500"
 //   .                  nothing: only that the PC is still there
-// It answers "OK" or "ERR ..." to every line but ".", and starts with "LEAH DCC BASE 4". With the
+// It answers "OK" or "ERR ..." to every line but ".", and starts with "LEAH DCC BASE 5". With the
 // shield and the power on, it says the current every half second: "A 25" (mA).
 //
 // The programming track (design/model_railroading.md, "Stage 2"): the shield's channel B, as DCC-EX
@@ -37,6 +37,8 @@
 // timer gives it the same signal; pin 8 its brake, held low; A1 its current; A5 its fault line).
 //   R 1                read setting (CV) 1 on the programming track: "CV 1 3", "CV 1 none" (nothing
 //                      answered), or "CV 1 off <why>"
+//   W 3 10             write 10 into setting 3, then verify it: "W 3 10 ok", "W 3 10 unconfirmed
+//                      (...)", or "W 3 off <why>"
 // Reading turns the main track (A) off first, and B off again after: NMRA S-9.2.3's service mode,
 // direct mode. B gets the reset packet as its filler (never the idle packet, which would take a decoder
 // out of service mode), 260 of them first (about 1.6 s) for the decoder to start up (up to 1 A for
@@ -322,6 +324,47 @@ int read_cv(uint16_t cv) {
   return a ? value : -1;
 }
 
+// Writes a setting (CV 1 to 1024) on the programming track (S-9.2.3's direct mode, write byte): the
+// decoder started as for reading, the write sent 5 times with 6 resets after (its acknowledgment
+// watched, though not every decoder gives one for a write), 30 more resets for it to store the value,
+// then the byte verified as a reading's last question is, twice at most. 1: confirmed; 0: written but
+// not confirmed; -2: the programming track was cut.
+int write_cv(uint16_t cv, uint8_t value) {
+  set_prog(true);
+  noInterrupts(); ack_peak = 0; interrupts();
+  if (!wait_packets(260)) return -2;
+  uint8_t high = 0x03 & ((cv - 1) >> 8), low = (cv - 1) & 0xFF;
+  Packet w = {{(uint8_t)(0x7C | high), low, value, 0}, 4};
+  w.bytes[3] = w.bytes[0] ^ w.bytes[1] ^ w.bytes[2];
+  if (service(w) < 0) return -2;
+  if (!wait_packets(30)) return -2;
+  Packet v = {{(uint8_t)(0x74 | high), low, value, 0}, 4};
+  v.bytes[3] = v.bytes[0] ^ v.bytes[1] ^ v.bytes[2];
+  for (uint8_t tries = 0; tries < 2; tries++) {
+    int a = service(v);
+    if (a < 0) return -2;
+    if (a) { set_prog(false); return 1; }
+  }
+  set_prog(false);
+  return 0;
+}
+
+// Says, after a reading or a writing, why the programming track was cut (the rest of its answer line).
+void say_prog_cut() {
+  uint8_t why;
+  uint16_t steps;
+  noInterrupts(); why = tripped; steps = tripped_steps; tripped = 0; interrupts();
+  if (why == 3) {
+    Serial.print(" off the programming track's current was over its limit (");
+    Serial.print((long)(steps * MA_PER_STEP));
+    Serial.println(" mA, the limit 250 mA, 1 A as the decoder starts): is something shorting it?");
+  } else if (why == 4) {
+    Serial.println(" off the motor shield's channel B driver reported a fault (too hot, a short it caught itself, or no supply in the shield's jack)");
+  } else {
+    Serial.println(" off the programming track was cut off");
+  }
+}
+
 void power_off_because(const char *why) {
   set_power(false);
   Serial.print("OFF ");
@@ -417,6 +460,25 @@ void obey(const char *line) {
       Serial.println(cut ? "B off cut" : "B done");
       return;
     }
+    case 'W': {
+      long cv = read_number(c);
+      long value = read_number(c);
+      if (cv < 1 || cv > 1024) { Serial.println("ERR a setting (CV) is 1 to 1024"); return; }
+      if (value < 0 || value > 255) { Serial.println("ERR a setting's value is 0 to 255"); return; }
+      if (!shield) { Serial.print("W "); Serial.print(cv); Serial.println(" off there is no motor shield"); return; }
+      if (power) Serial.println("OFF reading a setting: the main track's power is off while the programming track is on");
+      int done = write_cv(cv, value);
+      set_prog(false);
+      Serial.print("W "); Serial.print(cv); Serial.print(" "); Serial.print(value);
+      if (done == 1) Serial.println(" ok");
+      else if (done == 0) {
+        Serial.print(" unconfirmed (baseline ");
+        Serial.print((long)(last_baseline * MA_PER_STEP));
+        Serial.println(" mA)");
+      }
+      else say_prog_cut();
+      return;
+    }
     case 'R': {
       long cv = read_number(c);
       if (cv < 1 || cv > 1024) { Serial.println("ERR a setting (CV) is 1 to 1024"); return; }
@@ -435,20 +497,7 @@ void obey(const char *line) {
         Serial.print((long)(peak * MA_PER_STEP));
         Serial.println(" mA)");
       }
-      else {
-        uint8_t why;
-        uint16_t steps;
-        noInterrupts(); why = tripped; steps = tripped_steps; tripped = 0; interrupts();
-          if (why == 3) {
-          Serial.print(" off the programming track's current was over its limit (");
-          Serial.print((long)(steps * MA_PER_STEP));
-          Serial.println(" mA, the limit 250 mA, 1 A as the decoder starts): is something shorting it?");
-        } else if (why == 4) {
-          Serial.println(" off the motor shield's channel B driver reported a fault (too hot, a short it caught itself, or no supply in the shield's jack)");
-        } else {
-          Serial.println(" off the programming track was cut off");
-        }
-      }
+      else say_prog_cut();
       return;
     }
     case 'L': {
@@ -481,7 +530,7 @@ void obey(const char *line) {
       return;
     }
   }
-  Serial.println("ERR unknown: K, D, S, +, -, L, R, X, ?, or .");
+  Serial.println("ERR unknown: K, D, S, +, -, L, R, W, B, X, ?, or .");
 }
 
 // Whether the shield is there: its sense resistor holds A0 low against the internal pull-up.
@@ -524,7 +573,7 @@ void setup() {
   TIMSK1 = _BV(TOIE1);
   interrupts();
   Serial.begin(115200);
-  Serial.println("LEAH DCC BASE 4");
+  Serial.println("LEAH DCC BASE 5");
 }
 
 void loop() {

@@ -9,7 +9,7 @@ $base = null
 $loco = null
 $speed_shown = -1
 
-$win = window(title: "DCC throttle", width: 800, height: 600, minimum_width: 740, minimum_height: 560)
+$win = window(title: "DCC throttle", width: 800, height: 680, minimum_width: 740, minimum_height: 640)
 
 ` -- the base station --
 $port_label = label(left: 20, top: 24, width: 110, text: "Base station:")
@@ -78,7 +78,29 @@ foreach $names as $n: $words {
     $function_buttons[] = $b
 }
 
-$help = label(left: 20, top: 470, width: 740, height: 80, multi_line: true, lock_right: true, _
+` -- the decoder's settings, on the programming track --
+$settings_box = group_box(left: 20, top: 462, width: 740, height: 76, text: "Decoder settings (on the programming track, with the track power off)", lock_right: true)
+$win.add($settings_box)
+$cv_label = label(left: 36, top: 496, width: 30, text: "CV")
+$win.add($cv_label)
+$cv = text_field(left: 64, top: 492, width: 60, text: "3")
+$win.add($cv)
+$cv_arrows = up_down_arrows(left: 126, top: 492, minimum_value: 1, maximum_value: 1024, value: 3)
+$win.add($cv_arrows)
+$cv_name = label(left: 160, top: 496, width: 220, text: "")
+$win.add($cv_name)
+$cv_value = text_field(left: 386, top: 492, width: 70, text: "", hint: "value")
+$win.add($cv_value)
+$cv_read = button(left: 470, top: 488, width: 130, height: 34, text: "Read", enabled: false)
+$win.add($cv_read)
+$cv_write = button(left: 612, top: 488, width: 130, height: 34, text: "Write", enabled: false, lock_left: false, lock_right: true)
+$win.add($cv_write)
+` What the usual settings are (NMRA S-9.2.2).
+$cv_names = [1: "Short address", 2: "Start voltage", 3: "Acceleration", 4: "Deceleration", 5: "Top speed", _
+    6: "Middle speed", 7: "Version (read only)", 8: "Maker (read only)", 17: "Long address, high", _
+    18: "Long address, low", 19: "Consist address", 29: "Configuration"]
+
+$help = label(left: 20, top: 552, width: 740, height: 80, multi_line: true, lock_right: true, _
     text: "Stop slows the locomotive as its decoder is set to; Emergency stop (or Escape) stops every " _
     + "locomotive at once. Lifting a locomotive off the rails cuts its power too. The base station " _
     + "turns the power off by itself on a short, or if this app stops talking to it.")
@@ -102,13 +124,26 @@ function look_for_boards() {
     }
 }
 
+function set_programming_enabled($on) {
+    global $read, $cv_read, $cv_write
+    foreach [$read, $cv_read, $cv_write] as $c {
+        $c.enabled = $on
+    }
+}
+
+function show_cv_name() {
+    global $cv, $cv_name, $cv_names
+    $n = if is_digits(trim($cv.text)) then to_number($cv.text) else 0
+    $cv_name.text = $cv_names[$n] ?? ""
+}
+
 function set_driving_enabled($on) {
     global $power, $throttle, $direction, $stop, $emergency, $function_buttons, $read
     foreach [$power, $throttle, $direction, $stop, $emergency] as $c {
         $c.enabled = $on
     }
     ` (Reading turns the main track off: offered only while its power is off.)
-    $read.enabled = $on and not $power.value
+    set_programming_enabled($on and not $power.value)
     foreach $function_buttons as $b {
         $b.enabled = $on
     }
@@ -170,10 +205,19 @@ $connect.on_click = function() {
             return
         }
         $base.on_read = function($what, $value, $error) {
-            global $address, $long, $read, $status, $power
+            global $address, $long, $read, $status, $power, $cv_value
             $power.value = false
             $power.enabled = true
-            $read.enabled = true
+            set_programming_enabled(true)
+            if $what != "address" {
+                if $error != null {
+                    $status.text = "Couldn't read CV " + $what + ": " + $error
+                } else {
+                    $cv_value.text = to_text($value)
+                    $status.text = "CV " + $what + " is " + $value + "."
+                }
+                return
+            }
             if $error != null {
                 $status.text = "Couldn't read the address: " + $error
                 return
@@ -183,6 +227,14 @@ $connect.on_click = function() {
             take_locomotive()
             $status.text = "The locomotive on the programming track answers to address " + $value["address"] _
                 + (if $value["long"] then " (long)" else "") + ". Move it to the main track (A) to drive it."
+        }
+        $base.on_write = function($what, $value, $error) {
+            global $status, $power
+            $power.value = false
+            $power.enabled = true
+            set_programming_enabled(true)
+            $status.text = if $error != null then "Couldn't write CV " + $what + ": " + $error _
+                else "CV " + $what + " is now " + $value + " (the decoder confirmed it)."
         }
         take_locomotive()
         set_driving_enabled(true)
@@ -201,7 +253,7 @@ $read.on_click = function() {
         return
     }
     $throttle.value = 0
-    $read.enabled = false
+    set_programming_enabled(false)
     ` (No track power while reading: the switch comes back with the answer.)
     $power.enabled = false
     $status.text = "Reading the address on the programming track (the B screws): the main track's power is off meanwhile..."
@@ -209,11 +261,66 @@ $read.on_click = function() {
 }
 
 $power.on_value_changed = function() {
-    global $base, $power, $read
+    global $base, $power
     if $base != null and $base.power != $power.value {
         $base.power = $power.value
     }
-    $read.enabled = $base != null and not $power.value
+    set_programming_enabled($base != null and not $power.value)
+}
+
+$cv.on_text_changed = function() {
+    global $cv, $cv_arrows
+    show_cv_name()
+    if is_digits(trim($cv.text)) {
+        $n = to_number($cv.text)
+        if $n >= 1 and $n <= 1024 and $cv_arrows.value != $n {
+            $cv_arrows.value = $n
+        }
+    }
+}
+$cv_arrows.on_value_changed = function() {
+    global $cv, $cv_arrows
+    if $cv.text != to_text($cv_arrows.value) {
+        $cv.text = to_text($cv_arrows.value)
+    }
+}
+
+` Reads the setting shown, or writes the value typed into it, in the background (a few seconds).
+function start_programming($writing) {
+    global $base, $cv, $cv_value, $status, $throttle, $power
+    if $base == null {
+        return
+    }
+    if not is_digits(trim($cv.text)) or to_number($cv.text) < 1 or to_number($cv.text) > 1024 {
+        $status.text = "A setting (CV) is a number from 1 to 1024."
+        return
+    }
+    $n = to_number($cv.text)
+    if $writing and (not is_digits(trim($cv_value.text)) or to_number($cv_value.text) > 255) {
+        $status.text = "A setting's value is a number from 0 to 255."
+        return
+    }
+    try {
+        if $writing {
+            $base.write_cv($n, to_number($cv_value.text), in_background: true)
+            $status.text = "Writing " + trim($cv_value.text) + " into CV " + $n + " on the programming track..."
+        } else {
+            $base.read_cv($n, in_background: true)
+            $status.text = "Reading CV " + $n + " on the programming track..."
+        }
+    } catch $e {
+        $status.text = $e.message
+        return
+    }
+    $throttle.value = 0
+    set_programming_enabled(false)
+    $power.enabled = false
+}
+$cv_read.on_click = function() {
+    start_programming(false)
+}
+$cv_write.on_click = function() {
+    start_programming(true)
 }
 
 $address.on_text_changed = function() {
@@ -300,4 +407,5 @@ $clock.on_run = function() {
 }
 
 look_for_boards()
+show_cv_name()
 $win.show()

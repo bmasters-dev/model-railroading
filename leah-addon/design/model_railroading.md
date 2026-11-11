@@ -303,7 +303,16 @@ or `CV <cv> off <why>`; B's filler is the reset packet, never the idle one. Lear
 - **In Leah:** `read_cv($cv)` and `read_address()` on a `dcc_base`, each `in_background: true` with the
   answer through `on_read($what, $value, $error)` (a window can't wait seconds); one reading at a
   time; the main track's `power` false after. The throttle's **Read address** button uses it.
-  Writing CVs (and operations-mode programming on the main) is next.
+- **Writing (decided and built the same morning):** `W <cv> <value>` on the board (`LEAH DCC BASE 5`):
+  the decoder started as for reading, the write-byte packet 5 times with 6 resets after, 30 resets
+  for it to store the value, then verify-byte up to twice; `W 3 12 ok`, `W 3 12 unconfirmed (...)`,
+  or `W 3 off <why>`. Leah writes once more when unconfirmed. `write_cv($cv, $value)` and
+  `write_address($address, long:)` (CV 1, or CV 17 and 18, with CV 29's bit 5, CV 29 read first so
+  its other bits stay), each `in_background: true` with `on_write($what, $value, $error)`. CV 7 is
+  refused (read only) and so is CV 8 (writing it resets many decoders to their factory settings: a
+  deliberate reset can come later, its own function). The throttle's **Decoder settings** row (CV,
+  its name for the usual ones, the value, Read, Write), with the power off only. Operations-mode
+  programming on the main is next.
 
 ## Rules to keep (agreed in principle)
 

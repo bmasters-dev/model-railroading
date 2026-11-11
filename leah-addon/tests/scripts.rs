@@ -346,7 +346,7 @@ fn a_base_station_that_turns_its_power_off_says_so() {
 fn a_board_without_leahs_program_is_named_with_what_to_do() {
     for (mode, words) in [
         ("silent", "isn't running Leah's base station program: load it with load_dcc_program(\"{port}\", \"base\")"),
-        ("old", "runs an older program of Leah's (LEAH DCC BASE 3): load the new one with load_dcc_program(\"{port}\", \"base\")"),
+        ("old", "runs an older program of Leah's (LEAH DCC BASE 4): load the new one with load_dcc_program(\"{port}\", \"base\")"),
         ("reader", "runs Leah's reader program, not the base station's: are the base station's and the reader's ports the wrong way round?"),
     ] {
         let Some(boards) = fake_boards(&["--base", mode]) else {
@@ -788,7 +788,7 @@ try {{
     assert!(read.success, "{}", read.stderr);
     let lines: Vec<&str> = read.stdout.lines().collect();
     assert_eq!(lines[0], "");
-    assert_eq!(lines[1], "dcc_base.read_cv(): a reading is going on already: one at a time (wait for its on_read)");
+    assert_eq!(lines[1], "dcc_base.read_cv(): a reading or writing is going on already: one at a time (wait for its on_read or on_write)");
     assert_eq!(lines[2], "[\"address\", [\"address\": 1, \"long\": false], null]");
     assert!(lines[3].starts_with("[8, null, \"no decoder answered on the programming track"), "{}", read.stdout);
 }
@@ -834,4 +834,102 @@ fn the_dcc_throttle_example_reads_the_address_on_the_programming_track() {
     let _ = std::fs::remove_dir_all(&dir);
     let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(printed.contains("5\nfalse\nThe locomotive on the programming track answers to address 5."), "{printed}");
+}
+
+#[test]
+fn a_decoders_settings_and_address_are_written_on_the_programming_track() {
+    // Writing a setting, read back; the address changed to a long one and back to a short one, CV 29's
+    // bit 5 following and its other bits kept; CV 7 and 8 refused; with no decoder, unconfirmed; in
+    // the background through on_write.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=3,29=6,3=0"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+$base.write_cv(3, 12)
+print($base.read_cv(3))
+$base.write_address(730)
+print([$base.read_address(), $base.read_cv(29), $base.read_cv(17), $base.read_cv(18)])
+$base.write_address(5)
+print([$base.read_address(), $base.read_cv(29)])
+foreach [function() {{ $base.write_cv(8, 8) }}, function() {{ $base.write_cv(7, 1) }}, function() {{ $base.write_cv(3, 256) }}, function() {{ $base.write_address(200, long: false) }}] as $f {{
+    try {{
+        $f()
+    }} catch $e {{
+        print($e.type + ": " + $e.message)
+    }}
+}}
+$base.on_write = function($what, $value, $error) {{
+    print(["written", $what, $value, $error])
+}}
+$base.write_cv(4, 20, in_background: true)
+"#,
+        boards.base
+    );
+    let written = run("write-cv", &script);
+    drop(boards);
+    assert!(written.success, "{}", written.stderr);
+    assert_eq!(
+        written.stdout,
+        concat!(
+            "12\n",
+            "[[\"address\": 730, \"long\": true], 38, 194, 218]\n",
+            "[[\"address\": 5, \"long\": false], 6]\n",
+            "range_error: dcc_base.write_cv(): CV 8 isn't written here: writing it is how many decoders are reset to their factory settings, every setting lost\n",
+            "range_error: dcc_base.write_cv(): CV 7 is the decoder's version, which can't be written\n",
+            "range_error: dcc_base.write_cv(): a setting's value is 0 to 255, not 256\n",
+            "range_error: dcc_base.write_address(): 200 is a long address: a short one is 1 to 127\n",
+            "[\"written\", 4, 20, null]\n",
+        )
+    );
+
+    let Some(boards) = fake_boards(&["--shield"]) else { return };
+    let none = run("write-none", &format!("$base = dcc_base(\"{}\")\ntry {{\n    $base.write_cv(3, 12)\n}} catch $e {{\n    print($e.message)\n}}\n", boards.base));
+    drop(boards);
+    assert!(none.success, "{}", none.stderr);
+    assert_eq!(none.stdout, "dcc_base.write_cv(): the decoder didn't confirm the new value (baseline 0 mA): it may not have taken it (is the locomotive on the programming track, with clean wheels?)\n");
+}
+
+#[test]
+fn the_dcc_throttle_example_reads_and_writes_a_setting() {
+    let gui = std::env::var_os("LEAH_GUI").map(PathBuf::from).unwrap_or_else(|| home().join("Leah_Dev/target/all_addons/debug/leah"));
+    let screen = home().join("Leah_Dev/tools/wayland_test_screen.sh");
+    if !gui.is_file() || !screen.is_file() {
+        eprintln!("skipped: no Leah with windows ({}) or no hidden test screen", gui.display());
+        return;
+    }
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=1,29=6,3=5"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let dir = addons_folder("throttle-settings");
+    let list = dir.join("ports.txt");
+    std::fs::write(&list, format!("{}\t2341\t0042\t\n", boards.base)).unwrap();
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/dcc_throttle.leah");
+    let file = dir.join("script.leah");
+    std::fs::write(
+        &file,
+        format!(
+            "include \"{}\"\ncall_later(300, function() {{\n    global $connect\n    $connect.click()\n    call_later(3500, function() {{\n        global $cv_read\n        $cv_read.click()\n        call_later(1500, function() {{\n            global $status, $cv_value, $cv_write, $cv_name\n            print($cv_name.text + \": \" + $cv_value.text)\n            $cv_value.text = \"12\"\n            $cv_write.click()\n            call_later(1500, function() {{\n                global $status\n                print($status.text)\n                quit()\n            }})\n        }})\n    }})\n}})\n",
+            example.display()
+        ),
+    )
+    .unwrap();
+    let out = Command::new("sh")
+        .arg(&screen)
+        .arg("--gui")
+        .arg(&gui)
+        .arg(&file)
+        .env("LEAH_3RD_PARTY_ADDONS", &dir)
+        .env("LEAH_USER_ADDONS", "")
+        .env("LEAH_TEST_DCC_PORTS", &list)
+        .env("LEAH_TEST_INTERACT", "")
+        .env("LEAH_QUIT_AFTER_MS", "12000")
+        .output()
+        .expect("the hidden screen runs");
+    drop(boards);
+    let _ = std::fs::remove_dir_all(&dir);
+    let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(printed.contains("Acceleration: 5\nCV 3 is now 12 (the decoder confirmed it)."), "{printed}");
 }

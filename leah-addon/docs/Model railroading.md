@@ -57,7 +57,7 @@ print($base.timing["one"])
 
 ## The programming track
 
-The motor shield's **B** screws are the **programming track**: a piece of track (or a treadmill) on its own, where a decoder's settings are read, its address among them ([read_cv](ref:dcc_base#read_cv), [read_address](ref:dcc_base#read_address)). Put the locomotive on it, read, then move it to the main track (the **A** screws) to drive. The main track's power is off while reading.
+The motor shield's **B** screws are the **programming track**: a piece of track (or a treadmill) on its own, where a decoder's settings are read and written, its address among them ([read_cv](ref:dcc_base#read_cv), [read_address](ref:dcc_base#read_address), [write_cv](ref:dcc_base#write_cv), [write_address](ref:dcc_base#write_address)). Put the locomotive on it, read, then move it to the main track (the **A** screws) to drive. The main track's power is off while reading.
 
 ## Pages
 
@@ -74,7 +74,7 @@ The example app `dcc_simulator.leah`, which comes with the addon, is a throttle:
 
 The example app `dcc_bench.leah` is the same throttle on Leah's base station board, with the reader: it finds the two boards, loads Leah's programs onto them, connects, and shows what the reader heard, how long the half-bits were, and whether that is within the NMRA's limits. When Linux doesn't let the account use the boards yet, it says so in plain words and offers to fix it.
 
-The example app `dcc_throttle.leah` drives a real locomotive on Leah's base station with its motor shield: the locomotive's address (a long one chosen by itself past 127), the track power with its current, a speed slider, Forward and Reverse (sent as soon as it connects, as some decoders keep their headlight off until they are told a direction), Stop and Emergency stop (also the Escape key), and the functions F0 to F12; its **Read address** button reads the address of the locomotive on the programming track and drives that one.
+The example app `dcc_throttle.leah` drives a real locomotive on Leah's base station with its motor shield: the locomotive's address (a long one chosen by itself past 127), the track power with its current, a speed slider, Forward and Reverse (sent as soon as it connects, as some decoders keep their headlight off until they are told a direction), Stop and Emergency stop (also the Escape key), and the functions F0 to F12; its **Read address** button reads the address of the locomotive on the programming track and drives that one, and its **Decoder settings** row reads and writes any setting there, its name shown for the usual ones.
 
 ## See also
 

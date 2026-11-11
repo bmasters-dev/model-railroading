@@ -75,6 +75,8 @@ $base.power = true
 | [close](#close) | | |
 | [read_address](#read_address) | in_background: boolean | array |
 | [read_cv](#read_cv) | cv as number, in_background: boolean | number |
+| [write_address](#write_address) | address as number, long: boolean, in_background: boolean | |
+| [write_cv](#write_cv) | cv as number, value as number, in_background: boolean | |
 | [decoder](#decoder) | address as number, long: boolean | array |
 | [emergency_stop](#emergency_stop) | | |
 
@@ -83,6 +85,7 @@ $base.power = true
 | Name | Parameters |
 |---|---|
 | [on_read](#on_read) | what, value, error |
+| [on_write](#on_write) | what, value, error |
 
 ## Property descriptions
 
@@ -284,6 +287,40 @@ With `in_background: true` it gives back `null` at once, and [on_read](#on_read)
 
 ---
 
+### write_address
+
+**write_address**(address, long: ..., in_background: false)
+
+Gives the locomotive on the **programming track** a new address. A long one (128 to 10239, or any with `long: true`) goes into CV 17 and 18, and CV 29's bit 5 is set so the decoder answers to it; a short one (1 to 127) into CV 1, with that bit cleared. CV 29 is read first, so its other bits stay as they were. `long:` is `true` by itself for 128 and over; `long: false` with one of those is a `range_error`. Each setting written is confirmed as [write_cv](#write_cv) does.
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+$base.write_address(3)
+print($base.read_address()["address"])
+```
+
+With `in_background: true` it gives back `null` at once, and [on_write](#on_write) says how it went (its `what` is `"address"`).
+
+---
+
+### write_cv
+
+**write_cv**(cv, value, in_background: false)
+
+Writes a value (0 to 255) into a decoder setting (CV 1 to 1024) of the locomotive on the **programming track**, the motor shield's **B** screws, and has the decoder confirm it: the base station reads the value back before saying it is done. As for [read_cv](#read_cv), the main track's power is off afterwards, only a base station board with its motor shield can do it, and one reading or writing goes on at a time. A value the decoder didn't confirm is written once more, then it is a `hardware_error`: `the decoder didn't confirm the new value (...): it may not have taken it (is the locomotive on the programming track, with clean wheels?)`.
+
+CV 7 (the decoder's version) can't be written, and CV 8 isn't written here: writing it is how many decoders are reset to their factory settings, every setting lost. Both are a `range_error`, as is a number or value out of range.
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+$base.write_cv(3, 12)
+print("acceleration: " + $base.read_cv(3))
+```
+
+With `in_background: true` it gives back `null` at once, and [on_write](#on_write) says how it went (its `what` is the CV's number, its `value` the value written).
+
+---
+
 ### emergency_stop
 
 **emergency_stop**()
@@ -328,6 +365,14 @@ $base.on_read = function($what, $value, $error) {
 }
 $base.read_address(in_background: true)
 ```
+
+---
+
+### on_write
+
+**on_write**(what, value, error)
+
+A writing started with `in_background: true` is done: `what` is the CV's number ([write_cv](#write_cv)) or `"address"` ([write_address](#write_address)); `value` is what was written (the value, or the address's array), or `null` when it failed, and then `error` says why in words.
 
 ## See also
 

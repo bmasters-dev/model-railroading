@@ -15,7 +15,7 @@ use crate::board::{self, Link, Timing};
 use crate::dcc::{self, DecoderState, Reader, Target};
 
 const BASE_PROPS: &[&str] = &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"];
-const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address"];
+const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address"];
 const LOCO_PROPS: &[&str] = &["address", "long", "base", "speed", "direction"];
 const LOCO_FUNCS: &[&str] = &["set_function", "function", "stop", "emergency_stop"];
 
@@ -409,12 +409,18 @@ impl DccBase {
             return Err(hardware(format!("{what}: the base station has no motor shield, whose channel B is the programming track")));
         }
         let reading = self.with_link(what, |l| Ok(l.reading()))?;
-        reading.start().ok_or_else(|| hardware(format!("{what}: a reading is going on already: one at a time (wait for its on_read)")))
+        reading.start().ok_or_else(|| hardware(format!("{what}: a reading or writing is going on already: one at a time (wait for its on_read or on_write)")))
     }
 
     /// Runs a reading on a thread of its own, firing `on_read(what, value, error)` when it is done (the
     /// value null on an error, the error null otherwise); a script without windows waits for it.
     fn read_in_background(&self, turn: board::ReadingTurn, what: Value, read: impl FnOnce(&board::ReadingTurn) -> Result<Value, String> + Send + 'static) {
+        self.in_background("on_read", turn, what, read);
+    }
+
+    /// Runs a reading or a writing on a thread of its own, firing `event(what, value, error)` when it
+    /// is done (the value null on an error, the error null otherwise); a script without windows waits.
+    fn in_background(&self, event: &'static str, turn: board::ReadingTurn, what: Value, read: impl FnOnce(&board::ReadingTurn) -> Result<Value, String> + Send + 'static) {
         let Some(events) = self.events.clone() else { return };
         events.keep_running(true);
         // (The main track's power goes off for the reading, as the board says in its "OFF" line.)
@@ -430,7 +436,7 @@ impl DccBase {
             // ("No more" first, then the event: its function may start another reading, whose "yes"
             // must be the newer word; Leah keeps the script waiting for the event meanwhile.)
             events.keep_running(false);
-            events.fire("on_read", vec![what, value, error]);
+            events.fire(event, vec![what, value, error]);
         });
     }
 
@@ -599,6 +605,56 @@ impl Object for DccBase {
                 drop(turn);
                 self.after_reading(call);
                 read.map(as_value).map_err(|e| hardware(format!("dcc_base.read_address(): {e}")))
+            }
+            "write_cv" => {
+                call.count_between(2, 2)?;
+                call.only_options(&["in_background"])?;
+                let cv = whole("dcc_base.write_cv", "a setting's number", call.arg(0))?;
+                let value = whole("dcc_base.write_cv", "a setting's value", call.arg(1))?;
+                if !(1..=1024).contains(&cv) {
+                    return Err(Error::range_error(format!("dcc_base.write_cv(): a setting (CV) is 1 to 1024, not {cv}")));
+                }
+                if !(0..=255).contains(&value) {
+                    return Err(Error::range_error(format!("dcc_base.write_cv(): a setting's value is 0 to 255, not {value}")));
+                }
+                match cv {
+                    7 => return Err(Error::range_error("dcc_base.write_cv(): CV 7 is the decoder's version, which can't be written")),
+                    8 => return Err(Error::range_error("dcc_base.write_cv(): CV 8 isn't written here: writing it is how many decoders are reset to their factory settings, every setting lost")),
+                    _ => {}
+                }
+                let background = bool_option(call, "in_background", false)?;
+                let turn = self.reading_turn("dcc_base.write_cv()", call)?;
+                if background {
+                    self.in_background("on_write", turn, Value::from(cv), move |t| t.write_cv(cv, value).map(|_| Value::from(value)));
+                    return Ok(Value::Null);
+                }
+                let done = turn.write_cv(cv, value);
+                drop(turn);
+                self.after_reading(call);
+                done.map(|_| Value::Null).map_err(|e| hardware(format!("dcc_base.write_cv(): {e}")))
+            }
+            "write_address" => {
+                call.count_between(1, 1)?;
+                call.only_options(&["long", "in_background"])?;
+                let address = whole("dcc_base.write_address", "an address", call.arg(0))?;
+                if !(1..=i64::from(dcc::LONG_MOST)).contains(&address) {
+                    return Err(Error::range_error(format!("dcc_base.write_address(): a locomotive's address is 1 to {}, not {address}", dcc::LONG_MOST)));
+                }
+                let long = bool_option(call, "long", address > i64::from(dcc::SHORT_MOST))?;
+                if !long && address > i64::from(dcc::SHORT_MOST) {
+                    return Err(Error::range_error(format!("dcc_base.write_address(): {address} is a long address: a short one is 1 to {}", dcc::SHORT_MOST)).at(call.option_line("long")));
+                }
+                let background = bool_option(call, "in_background", false)?;
+                let turn = self.reading_turn("dcc_base.write_address()", call)?;
+                let as_value = move || Value::map([("address", Value::from(address)), ("long", Value::from(long))]);
+                if background {
+                    self.in_background("on_write", turn, Value::from("address"), move |t| t.write_address(address, long).map(|_| as_value()));
+                    return Ok(Value::Null);
+                }
+                let done = turn.write_address(address, long);
+                drop(turn);
+                self.after_reading(call);
+                done.map(|_| Value::Null).map_err(|e| hardware(format!("dcc_base.write_address(): {e}")))
             }
             other => Err(call.unknown_function("dcc_base", other, BASE_FUNCS)),
         }

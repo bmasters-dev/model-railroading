@@ -23,7 +23,8 @@ board's port that long after the base station first heard from the PC, as a pull
 given) while the power is on: it says the current every half second, and turns the power off when
 it is over the limit, as the board does (and then refuses to turn it on again for 2 seconds).
 `--cvs` gives the settings a decoder on the programming track answers with (`R <cv>`: "CV <cv> <value>",
-or "CV <cv> none (...)" for one not given), as the board's reading does (with the shield only).
+or "CV <cv> none (...)" for one not given), as the board's reading does (with the shield only);
+`W <cv> <value>` writes one ("W <cv> <value> ok"), or, with no `--cvs` (no decoder), is unconfirmed.
 `--restart-after` starts the base station again by itself that long after it first heard from the
 PC (as a brown-out does): its hello, its table emptied, its limit back to 1500, its power off.
 """
@@ -172,6 +173,21 @@ def main():
                     else:
                         say(base_master, f"CV {cv} none (baseline 0 mA, highest 0 mA)")
                     continue
+                elif c == "W":
+                    cv, value = (int(x) for x in line[1:].split()[:2])
+                    if not shield:
+                        say(base_master, f"W {cv} off there is no motor shield")
+                        continue
+                    if power:
+                        power = False
+                        say(base_master, "OFF reading a setting: the main track's power is off while the programming track is on")
+                    time.sleep(0.2)
+                    if cvs:
+                        cvs[cv] = value
+                        say(base_master, f"W {cv} {value} ok")
+                    else:
+                        say(base_master, f"W {cv} {value} unconfirmed (baseline 0 mA)")
+                    continue
                 elif c == "L":
                     n = int(line[1:].split()[0])
                     if not 10 <= n <= 5000:
@@ -199,7 +215,7 @@ def main():
         now = time.time()
         if mode in ("old", "reader") and now - last_old_hello > 0.5:
             last_old_hello = now
-            say(base_master, "LEAH DCC BASE 3" if mode == "old" else "LEAH DCC READER 1")
+            say(base_master, "LEAH DCC BASE 4" if mode == "old" else "LEAH DCC READER 1")
         if first_word is not None and drop_reader_after is not None and now - first_word > drop_reader_after and reader_master >= 0:
             os.close(reader_slave)
             os.close(reader_master)
@@ -219,7 +235,7 @@ def main():
             table.clear()
             waiting.clear()
             limit = 1500
-            say(base_master, "LEAH DCC BASE 4")
+            say(base_master, "LEAH DCC BASE 5")
         if power and shield and now - last_a >= 0.5:
             last_a = now
             say(base_master, f"A {drawing}")

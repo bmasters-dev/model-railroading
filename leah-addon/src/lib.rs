@@ -42,7 +42,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
         ],
         needs: Some(needs),
         objects: vec![
-            ("dcc_base", &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"], &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address"], &["on_read"]),
+            ("dcc_base", &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"], &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address"], &["on_read", "on_write"]),
             ("locomotive", &["address", "long", "base", "speed", "direction"], &["set_function", "function", "stop", "emergency_stop"], &[]),
             ("dcc_program_job", &["port", "role", "board", "finished", "succeeded", "message"], &["wait"], &["on_finished"]),
         ],

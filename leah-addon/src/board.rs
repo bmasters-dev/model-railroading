@@ -17,7 +17,7 @@ pub const BASE_PROGRAM: &str = include_str!("../boards/dcc_base/dcc_base.ino");
 pub const READER_PROGRAM: &str = include_str!("../boards/dcc_reader/dcc_reader.ino");
 
 /// What each program says as it starts.
-pub const BASE_HELLO: &str = "LEAH DCC BASE 4";
+pub const BASE_HELLO: &str = "LEAH DCC BASE 5";
 pub const READER_HELLO: &str = "LEAH DCC READER 1";
 
 /// How a port couldn't be opened, in words a person can act on.
@@ -130,8 +130,8 @@ pub struct Heard {
     pub shield: Option<bool>,
     pub limit: Option<i64>,
     pub current: Option<i64>,
-    /// The base station's answers to reading a setting ("CV 1 3", "CV 1 none", "CV 1 off ..."), oldest
-    /// first.
+    /// The base station's answers to reading or writing a setting ("CV 1 3", "CV 1 none", "CV 1 off
+    /// ...", "W 3 10 ok", "W 3 10 unconfirmed (...)"), oldest first.
     pub cv_answers: VecDeque<String>,
     /// The first line each board said as it started (or "STATE ..." / "T ..." when it said nothing
     /// as it started).
@@ -203,28 +203,7 @@ impl ReadingTurn {
     }
 
     fn read_cv_once(&self, cv: i64) -> Result<i64, String> {
-        let r = &self.0;
-        r.heard.lock().unwrap_or_else(|p| p.into_inner()).cv_answers.clear();
-        {
-            let mut base = r.base.lock().unwrap_or_else(|p| p.into_inner());
-            trace(&format!("-> R {cv}"));
-            write_all(&mut base, format!("R {cv}\n").as_bytes()).map_err(|e| format!("can't talk to the base station: {e}"))?;
-        }
-        let start = Instant::now();
-        let answer = loop {
-            let mut h = r.heard.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(a) = h.cv_answers.pop_front() {
-                break a;
-            }
-            if let Some(gone) = &h.gone {
-                return Err(gone.clone());
-            }
-            drop(h);
-            if start.elapsed() > READ_LIMIT {
-                return Err(format!("the base station didn't answer within {} seconds", READ_LIMIT.as_secs()));
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
+        let answer = self.ask(&format!("R {cv}"))?;
         let rest = answer.trim_start_matches("CV ").split_once(' ').map(|(_, r)| r.trim().to_string()).unwrap_or_default();
         if let Some(seen) = rest.strip_prefix("none") {
             let seen = seen.trim();
@@ -235,6 +214,74 @@ impl ReadingTurn {
             return Err(why.to_string());
         }
         rest.parse::<i64>().map_err(|_| format!("the base station answered {answer:?}"))
+    }
+
+    /// Writes a setting and has it confirmed (the base station reads it back): Ok, or what went wrong.
+    /// One the decoder didn't confirm is written once more.
+    pub fn write_cv(&self, cv: i64, value: i64) -> Result<(), String> {
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            let answer = self.ask(&format!("W {cv} {value}"))?;
+            let rest = answer.splitn(4, ' ').nth(3).unwrap_or("").trim().to_string();
+            if rest == "ok" {
+                return Ok(());
+            }
+            if let Some(why) = answer.split_once(" off ").map(|(_, w)| w.to_string()) {
+                return Err(why);
+            }
+            if tries == 2 {
+                let seen = rest.strip_prefix("unconfirmed").unwrap_or("").trim();
+                let seen = if seen.is_empty() { String::new() } else { format!(" {seen}") };
+                return Err(format!("the decoder didn't confirm the new value{seen}: it may not have taken it (is the locomotive on the programming track, with clean wheels?)"));
+            }
+        }
+    }
+
+    /// Sends the base station a reading's or writing's line and waits for its answer.
+    fn ask(&self, line: &str) -> Result<String, String> {
+        let r = &self.0;
+        r.heard.lock().unwrap_or_else(|p| p.into_inner()).cv_answers.clear();
+        {
+            let mut base = r.base.lock().unwrap_or_else(|p| p.into_inner());
+            trace(&format!("-> {line}"));
+            write_all(&mut base, format!("{line}\n").as_bytes()).map_err(|e| format!("can't talk to the base station: {e}"))?;
+        }
+        let start = Instant::now();
+        loop {
+            let mut h = r.heard.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(a) = h.cv_answers.pop_front() {
+                return Ok(a);
+            }
+            if let Some(gone) = &h.gone {
+                return Err(gone.clone());
+            }
+            drop(h);
+            if start.elapsed() > READ_LIMIT {
+                return Err(format!("the base station didn't answer within {} seconds", READ_LIMIT.as_secs()));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Gives a decoder an address: a long one (128 to 10239, or any with `long`) in CV 17 and 18 with
+    /// CV 29's bit 5 set, a short one in CV 1 with it cleared (CV 29 read first, so its other bits
+    /// stay as they were).
+    pub fn write_address(&self, address: i64, long: bool) -> Result<(), String> {
+        let config = self.read_cv(29)?;
+        if long {
+            self.write_cv(17, 0xC0 | (address >> 8))?;
+            self.write_cv(18, address & 0xFF)?;
+            if config & 0x20 == 0 {
+                self.write_cv(29, config | 0x20)?;
+            }
+        } else {
+            self.write_cv(1, address)?;
+            if config & 0x20 != 0 {
+                self.write_cv(29, config & !0x20)?;
+            }
+        }
+        Ok(())
     }
 
     /// Reads a decoder's address: CV 29's bit 5 says which one it answers to, CV 17 and 18 holding
@@ -460,7 +507,7 @@ fn run_link(base: Arc<Mutex<File>>, mut base_reading: File, mut reader: Option<F
                     if let Some(n) = after("limit").and_then(|n| n.parse().ok()) {
                         h.limit = Some(n);
                     }
-                } else if line.starts_with("CV ") {
+                } else if line.starts_with("CV ") || line.starts_with("W ") {
                     h.cv_answers.push_back(line);
                 } else if let Some(n) = line.strip_prefix("A ").and_then(|n| n.trim().parse().ok()) {
                     h.current = Some(n);
