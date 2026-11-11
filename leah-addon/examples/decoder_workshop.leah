@@ -1,0 +1,348 @@
+` The decoder workshop: every setting of a locomotive's decoder by name, read and written as a whole
+` (design/model_railroading.md, "Phase A, item 4"). Put the locomotive on the programming track (the
+` motor shield's B screws), connect, press Identify (it picks the decoder's definition), then Read all.
+` Change any row, then Write changes. "On the main" writes to a locomotive on the main track instead,
+` by its address: it can only write. Gray rows aren't known yet, amber ones are changed and not
+` written, yellow ones loaded and not written.
+
+$base = null
+$definition = decoder_definition("nmra")
+$programmer = null
+$filling = false
+
+$win = window(title: "Decoder workshop", width: 900, height: 740, minimum_width: 760, minimum_height: 560)
+
+` -- the base station --
+$port_label = label(left: 20, top: 24, width: 110, text: "Base station:")
+$win.add($port_label)
+$port = popup_menu(left: 130, top: 20, width: 380)
+$win.add($port)
+$connect = button(left: 524, top: 18, width: 120, height: 34, text: "Connect")
+$win.add($connect)
+$status = label(left: 20, top: 60, width: 860, height: 40, multi_line: true, lock_right: true, text: "")
+$win.add($status)
+
+` -- which decoder --
+$definition_label = label(left: 20, top: 112, width: 110, text: "Definition:")
+$win.add($definition_label)
+$definitions = popup_menu(left: 130, top: 108, width: 380)
+foreach decoder_definitions() as $d {
+    $definitions.add_row($d["about"], tag: $d["name"])
+}
+$definitions.selected_row_index = 0
+$win.add($definitions)
+$identify = button(left: 524, top: 106, width: 120, height: 34, text: "Identify", enabled: false, _
+    tooltip: "Reads which decoder the locomotive on the programming track has, and picks its definition")
+$win.add($identify)
+$on_main = checkbox(left: 664, top: 112, text: "On the main", enabled: false, _
+    tooltip: "Write to a locomotive on the main track, by its address (it can only write)")
+$win.add($on_main)
+$address = text_field(left: 790, top: 108, width: 90, text: "3", enabled: false, lock_right: true, tooltip: "The locomotive's address on the main")
+$win.add($address)
+
+` -- reading and writing --
+$read_all = button(left: 20, top: 152, width: 120, height: 34, text: "Read all", enabled: false)
+$win.add($read_all)
+$write_changes = button(left: 150, top: 152, width: 140, height: 34, text: "Write changes", enabled: false)
+$win.add($write_changes)
+$write_all = button(left: 300, top: 152, width: 120, height: 34, text: "Write all", enabled: false, _
+    tooltip: "Writes every setting (never the version, the maker, or the decoder lock)")
+$win.add($write_all)
+$cancel = button(left: 430, top: 152, width: 100, height: 34, text: "Cancel", enabled: false)
+$win.add($cancel)
+$progress = progress_bar(left: 550, top: 162, width: 330, value: 0, maximum_value: 1, lock_right: true)
+$win.add($progress)
+
+$settings = property_list(left: 20, top: 200, width: 860, height: 500, lock_right: true, lock_bottom: true, name_width: 330)
+$win.add($settings)
+$legend = label(left: 20, top: 708, width: 860, lock_right: true, lock_top: false, lock_bottom: true, _
+    text: "Gray: not known yet · Amber: changed, not written · Yellow: loaded, not written")
+$win.add($legend)
+
+` -- filling the list from the definition --
+
+` The row for a setting, by its kind.
+function add_setting_row($group, $s) {
+    $tip = (if is_set($s["help"]) then $s["help"] + " " else "") + "(CV " + (if is_list($s["cv"]) then join($s["cv"], " and ") else $s["cv"]) _
+        + (if is_set($s["bit"]) then ", bit " + $s["bit"] else "") + (if is_set($s["bits"]) then ", bits " + $s["bits"][0] + " to " + $s["bits"][1] else "") + ")"
+    $read_only = is_set($s["read_only"])
+    if $s["kind"] == "flag" {
+        return $group.add_row($s["name"], "checkbox", false, tag: $s["name"], tooltip: $tip, read_only: $read_only)
+    }
+    if $s["kind"] == "choice" {
+        $words = values($s["choices"])
+        return $group.add_row($s["name"], "choice", $words[0], choices: $words, tag: $s["name"], tooltip: $tip, read_only: $read_only)
+    }
+    $low = if $s["kind"] == "signed" then -127 else $s["min"]
+    $high = if $s["kind"] == "signed" then 127 else $s["max"]
+    return $group.add_row($s["name"], "number", keep_between(0, $low, $high), minimum: $low, maximum: $high, step: 1, decimals: 0, _
+        tag: $s["name"], tooltip: $tip, read_only: $read_only)
+}
+
+function fill_list() {
+    global $settings, $definition, $filling
+    $filling = true
+    $settings.remove_all_groups()
+    foreach $definition.groups as $g {
+        $settings.add_group($g, expanded: $g == "Address" or $g == "Configuration")
+    }
+    foreach $definition.settings as $s {
+        add_setting_row($settings.find_group($s["group"]), $s)
+    }
+    $filling = false
+    show_values()
+}
+
+` Each row's value from the programmer, and the rows that don't apply hidden.
+function show_values() {
+    global $settings, $definition, $programmer, $filling
+    if $programmer == null {
+        return
+    }
+    $filling = true
+    $values = $programmer.values
+    foreach $definition.settings as $s {
+        $row = $settings.find_row($s["name"])
+        $v = $values[$s["name"]]
+        if $v != null {
+            try {
+                $row.value = $v
+            } catch $e {
+                ` (A value the definition has no words for, or outside the row's range: left as it is.)
+            }
+        }
+        $row.visible = $definition.is_shown($s["name"], $values)
+    }
+    $filling = false
+}
+
+$settings.on_paint_value_background = function($g, $row) {
+    global $programmer
+    if $programmer == null or $row.tag == null {
+        return
+    }
+    $state = $programmer.state($row.tag)
+    $color = select case $state {
+        case "unknown": "#8080804D"
+        case "edited": "#FFA00066"
+        case "loaded": "#FFE0004D"
+        else: null
+    }
+    if $color != null {
+        $g.drawing_color = $color
+        $g.fill_rectangle(0, 0, $g.width, $g.height)
+    }
+}
+
+$settings.on_value_changed = function($row) {
+    global $programmer, $status, $filling, $settings
+    if $filling or $programmer == null {
+        return
+    }
+    try {
+        $programmer.set_value($row.tag, $row.value)
+        $status.text = $row.name + " changed: Write changes to send it to the decoder."
+    } catch $e {
+        $status.text = $e.message
+    }
+    show_values()
+    set_buttons()
+}
+
+` -- the programmer --
+
+function make_programmer() {
+    global $base, $definition, $programmer, $on_main, $address, $status
+    $programmer = null
+    if $base == null {
+        return
+    }
+    if $on_main.value {
+        $n = to_number($address.text)
+        if $n == null or $n < 1 or $n > 10239 {
+            $status.text = "The address on the main is 1 to 10239."
+            return
+        }
+        $programmer = decoder_programmer($definition, locomotive($n, long: $n > 127, base: $base))
+    } else {
+        $programmer = decoder_programmer($definition, $base)
+    }
+    $programmer.on_progress = function($done, $total, $cv) {
+        global $progress
+        $progress.maximum_value = $total
+        $progress.value = $done
+    }
+    $programmer.on_done = function($what, $error) {
+        global $status, $programmer
+        $words = select case $what {
+            case "read_all": "Read"
+            case "write_changes": "The changes were written"
+            else: "Every setting was written"
+        }
+        $status.text = if $error == null then $words + "." else $words + ", but: " + $error
+        show_values()
+        set_buttons()
+    }
+}
+
+function set_buttons() {
+    global $base, $programmer, $identify, $read_all, $write_changes, $write_all, $cancel, $on_main, $address, $definitions
+    $ready = $programmer != null and not $programmer.busy
+    $identify.enabled = $ready and not $on_main.value
+    $read_all.enabled = $ready and not $on_main.value
+    $write_changes.enabled = $ready
+    $write_all.enabled = $ready
+    $cancel.enabled = $programmer != null and $programmer.busy
+    $on_main.enabled = $base != null
+    $address.enabled = $base != null and $on_main.value
+    $definitions.enabled = $programmer == null or not $programmer.busy
+}
+
+function busy($words) {
+    global $status, $progress
+    $status.text = $words
+    $progress.value = 0
+    set_buttons()
+}
+
+$read_all.on_click = function() {
+    global $programmer, $status
+    try {
+        $programmer.read_all()
+        busy("Reading every setting (a few seconds each; the main track's power is off meanwhile)...")
+    } catch $e {
+        $status.text = $e.message
+    }
+}
+
+$write_changes.on_click = function() {
+    global $programmer, $status
+    try {
+        $programmer.write_changes()
+        busy("Writing the changes...")
+    } catch $e {
+        $status.text = $e.message
+    }
+}
+
+$write_all.on_click = function() {
+    global $programmer, $status
+    try {
+        $programmer.write_all()
+        busy("Writing every setting...")
+    } catch $e {
+        $status.text = $e.message
+    }
+}
+
+$cancel.on_click = function() {
+    global $programmer
+    $programmer.cancel()
+}
+
+$identify.on_click = function() {
+    global $base, $status
+    try {
+        $base.identify_decoder(in_background: true)
+        busy("Identifying the decoder on the programming track...")
+        $status.text = "Identifying the decoder on the programming track..."
+    } catch $e {
+        $status.text = $e.message
+    }
+}
+
+$definitions.on_selection_changed = function() {
+    global $definition, $definitions
+    $name = $definitions.selected_row_tag
+    if $name != null and $name != $definition.name {
+        $definition = decoder_definition($name)
+        make_programmer()
+        fill_list()
+        set_buttons()
+    }
+}
+
+$on_main.on_value_changed = function() {
+    make_programmer()
+    show_values()
+    set_buttons()
+}
+
+$address.on_text_changed = function() {
+    global $on_main
+    if $on_main.value {
+        make_programmer()
+        set_buttons()
+    }
+}
+
+` -- connecting --
+
+$connect.on_click = function() {
+    global $base, $programmer, $port, $connect, $status
+    if $base != null {
+        $base.close()
+        $base = null
+        $programmer = null
+        $connect.text = "Connect"
+        $status.text = "Disconnected."
+        set_buttons()
+        return
+    }
+    if $port.selected_row_tag == null {
+        $status.text = "No board to connect to."
+        return
+    }
+    $status.text = "Connecting (the Mega starts its program again as Leah opens it)..."
+    call_later(50, function() {
+        global $base, $port, $connect, $status, $definition, $definitions
+        try {
+            $base = dcc_base($port.selected_row_tag)
+        } catch $e {
+            $status.text = $e.message
+            $base = null
+            return
+        }
+        $base.on_read = function($what, $value, $error) {
+            global $status, $definition, $definitions
+            if $what != "identity" {
+                return
+            }
+            if $error != null {
+                $status.text = "Couldn't identify the decoder: " + $error
+                set_buttons()
+                return
+            }
+            $found = decoder_definition_for($value)
+            $status.text = "The decoder: " + ($value["maker"] ?? "maker " + $value["maker_id"]) _
+                + (if $value["family"] != null then ", " + $value["family"] else ", version " + $value["version"]) _
+                + ". Its definition: " + $found.name + ". Now Read all."
+            if $found.name != $definition.name {
+                $definitions.select_row_with_tag($found.name)
+            } else {
+                set_buttons()
+            }
+        }
+        $connect.text = "Disconnect"
+        if not $base.shield {
+            $status.text = "Connected, but the base station has no motor shield: its channel B is the programming track."
+        } else {
+            $status.text = "Connected. Put the locomotive on the programming track (B), then Identify."
+        }
+        make_programmer()
+        show_values()
+        set_buttons()
+    })
+}
+
+$ports = dcc_ports()
+foreach $ports as $i: $p {
+    $port.add_row($p["port"] + ": " + $p["name"] + (if $p["allowed"] then "" else " (not allowed yet)"), tag: $p["port"])
+    if starts_with($p["name"], "Arduino Mega") or $port.selected_row_index < 0 {
+        $port.selected_row_index = $i
+    }
+}
+$status.text = if count($ports) == 0 then "No board is plugged in: plug the Mega into USB, then start this app again." _
+    else "Connect to the base station."
+fill_list()
+$win.show()

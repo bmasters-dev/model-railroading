@@ -368,6 +368,40 @@ never locked): `find_decoder_locks(most: 7)` asks "is CV 16 = n?" for each n and
 track takes it, so with only that decoder there). **For item 4:** the decoder programmer's "write
 all" never writes CV 15 or 16, nor CV 7 and 8.
 
+## Phase A, item 4: decoder definitions and the programmer (built 2026-11-11, model-railroading#8)
+
+`decoder_definition`: Leah's own format, a list of settings, each with `name`, `cv` (or a list of CVs,
+most significant first), `bit`/`bits`, `kind` (number, choice, flag, signed: S-9.2.2's sign-and-
+amount, long_address: CV 17/18), `min`/`max`, `choices` (value → words; the words are the value),
+`group`, `help`, `default`, `read_only`, `write_all`, `shown_when` ([setting, op, value]), `index`.
+Built from Leah arrays, a JSON file (`read_decoder_definition_file`), or built in. Every definition
+starts from the NMRA standard set (57 settings over 52 CVs, S-9.2.2; CV 33-46 function mapping left
+for the function-map item) unless `standard: false`; a setting of the same name replaces a standard
+one. Checked when made: unknown parts, two settings on one bit, a condition naming no setting, a
+choice outside its bits, one CV number on two index pages (refused for now: the programmer knows a
+CV by its number). Built in: `nmra`; `soundtraxx_tsunami2_diesel` (58 of SoundTraxx's settings from
+its Tsunami2 Diesel Technical Reference: master volume and the 29 mixer channels, the sound choices
+as numbers (SoundTraxx's sound lists name them), sound options, brakes (signed), lights, back-EMF).
+`decoder_definition_for(identity)` picks one from `identify_decoder()`'s answer (Tsunami2 diesel by
+CV 7 = 71 and CV 254 = diesel), else `nmra`. Next definitions (as people ask, from the manuals in
+the private reference): Tsunami2 steam and electric, Econami, Blunami, ESU LokSound 5, TCS WOW.
+
+`decoder_programmer(definition, base | locomotive)`: on the programming track every run is on a
+thread of its own (`on_progress(done, total, cv)`, `on_done(what, error)`); on the main it writes
+only, synchronously, through the locomotive's writes. Bookkeeping: the decoder's known bytes (read
+or written), pending bytes (edits and loads), edited settings with their values, loaded CVs, and
+per-setting states unknown/read/written/edited/loaded. A reading replaces pending changes to what it
+reads but puts back edits to other settings sharing the CV. `read_all` asks each CV `tries` times
+(2), a CV a decoder lacks is left unknown in `problems`, and with nothing answering (CV 8 probed to
+tell) it stops at once. `write_all` never writes CV 7, 8, 15, 16 or read-only settings; `load_cvs`
+never takes them. On the main, a run changing the address the decoder answers to is refused before
+sending. A run's end is ordered (keep_running(false), the reading turn let go, not busy, on_done),
+also on a panic; `DccBase::in_background` got the same order. Code-reviewed twice (2026-11-11).
+
+The **decoder workshop** sample (`examples/decoder_workshop.leah`): a `property_list` with a group per
+definition group, rows by kind, rows painted by state, speed-table rows hidden by `is_shown`, Identify
+picking the definition, Read all, Write changes, Write all, Cancel, a progress bar, and On the main.
+
 ## Decided: no BiDiB (the owner, 2026-11-11)
 
 BiDiB's specification is free but supervised: the working group must be told before anything is

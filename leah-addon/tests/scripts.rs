@@ -1240,7 +1240,7 @@ foreach [_
             "[false, true]",
             "[59, 141, [82], 100, \"electronic\"]",
             "[\"file one\", 192, \"Sound\"]",
-            "range_error: decoder_definition(): there is no built-in definition named \"esu\" (there are \"nmra\")",
+            "range_error: decoder_definition(): there is no built-in definition named \"esu\" (there are \"nmra\", \"soundtraxx_tsunami2_diesel\")",
             "range_error: decoder_definition.cvs_of(): the setting \"Short address\" takes a whole number from 1 to 127, not 200",
             "range_error: decoder_definition.cvs_of(): CV 29's other bits aren't known: read it first (the setting \"Direction reversed\" is only part of it)",
             "range_error: decoder_definition.setting(): the definition \"nmra\" has no setting named \"Volume\"",
@@ -1249,4 +1249,334 @@ foreach [_
             "type_error: decoder_definition(): the setting \"Mute\" depends on \"Volume\", but there is no setting named that",
         ]
     );
+}
+
+#[test]
+fn a_programmer_reads_edits_and_writes_a_decoder_on_the_programming_track() {
+    // decoder_programmer on the programming track: read_all in the background (a setting the decoder
+    // doesn't have left unknown, in problems), each setting's state, edits written by
+    // write_changes, write_all refused while a CV isn't known, load_cvs never taking CV 8.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=3,3=5,29=6,8=141"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+$d = decoder_definition(name: "small", standard: false, settings: [_
+    ["name": "Short address", "cv": 1, "min": 1, "max": 127], _
+    ["name": "Acceleration", "cv": 3], _
+    ["name": "Speed steps", "cv": 29, "bit": 1, "choices": [0: "14", 1: "28/128"]], _
+    ["name": "Analog running", "cv": 29, "bit": 2], _
+    ["name": "Volume", "cv": 128], _
+    ["name": "Maker", "cv": 8, "read_only": true]])
+$p = decoder_programmer($d, $base)
+$steps = 0
+$p.on_progress = function($done, $total, $cv) {{
+    global $steps
+    $steps++
+}}
+$p.on_done = function($what, $error) {{
+    global $p, $steps
+    print([$what, $error, $steps])
+    $steps = 0
+    if $what == "read_all" {{
+        print($p.values)
+        print($p.states)
+        print($p.problems)
+        $p.set_value("Acceleration", 9)
+        $p.set_value("Analog running", false)
+        print([$p.state("Acceleration"), $p.state("Speed steps"), $p.value("Analog running"), $p.cvs[29]])
+        $p.write_changes()
+    }} else if $what == "write_changes" {{
+        print([$p.state("Acceleration"), $p.state("Analog running"), $p.state("Short address")])
+        try {{
+            $p.write_all()
+        }} catch $e {{
+            print($e.type + ": " + $e.message)
+        }}
+        $p.load_cvs([8: 3, 128: 7])
+        print([$p.state("Volume"), $p.value("Maker")])
+        $p.write_all()
+    }} else {{
+        print($p.states)
+        print([$base.read_cv(128), $base.read_cv(3), $base.read_cv(8)])
+    }}
+}}
+$p.read_all()
+try {{
+    $p.read_all()
+}} catch $e {{
+    print($e.message)
+}}
+"#,
+        boards.base
+    );
+    let out = run("programmer", &script);
+    drop(boards);
+    assert!(out.success, "{}", out.stderr);
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "decoder_programmer.read_all(): the programmer is busy reading or writing: one at a time (wait for its on_done, or cancel())",
+            "[\"read_all\", \"1 CV couldn't be read (the decoder may not have it): see problems\", 5]",
+            "[\"Short address\": 3, \"Acceleration\": 5, \"Speed steps\": \"28/128\", \"Analog running\": true, \"Volume\": null, \"Maker\": 141]",
+            "[\"Short address\": \"read\", \"Acceleration\": \"read\", \"Speed steps\": \"read\", \"Analog running\": \"read\", \"Volume\": \"unknown\", \"Maker\": \"read\"]",
+            "[128: \"the decoder didn't answer for this CV (it may not have it)\"]",
+            "[\"edited\", \"read\", false, 2]",
+            "[\"write_changes\", null, 2]",
+            "[\"written\", \"written\", \"read\"]",
+            "programming_error: decoder_programmer.write_all(): CV 128 isn't known: read everything first, or load the CVs (load_cvs)",
+            "[\"loaded\", 141]",
+            "[\"write_all\", null, 4]",
+            "[\"Short address\": \"written\", \"Acceleration\": \"written\", \"Speed steps\": \"written\", \"Analog running\": \"written\", \"Volume\": \"written\", \"Maker\": \"read\"]",
+            "[7, 9, 141]",
+        ]
+    );
+}
+
+#[test]
+fn a_programmer_writes_changes_on_the_main() {
+    // Given a locomotive, the programmer writes on the main (the simulated decoder keeps them), and
+    // can't read; a setting that is part of a CV needs the CV known first.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$loco = locomotive(3)
+$p = decoder_programmer(decoder_definition("nmra"), $loco)
+$p.set_value("Acceleration", 12)
+$p.set_value("Long address", 730)
+try {
+    $p.set_value("Analog running", true)
+} catch $e {
+    print($e.message)
+}
+try {
+    $p.read_all()
+} catch $e {
+    print($e.type + ": " + $e.message)
+}
+$p.on_done = function($what, $error) {
+    global $base, $p
+    print([$what, $error, $p.main_track])
+    print($base.decoder(3)["cvs"])
+    print([$p.state("Acceleration"), $p.state("Long address"), $p.state("Deceleration")])
+}
+$p.write_changes()
+"#;
+    let out = run("programmer-main", script);
+    assert!(out.success, "{}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        concat!(
+            "decoder_programmer.set_value(): CV 29's other bits aren't known: read it first (the setting \"Analog running\" is only part of it)\n",
+            "programming_error: decoder_programmer.read_all(): on the main, a decoder's settings can only be written: read them on the programming track\n",
+            "[\"write_changes\", null, true]\n",
+            "[3: 12, 17: 194, 18: 218]\n",
+            "[\"written\", \"written\", \"unknown\"]\n",
+        )
+    );
+}
+
+#[test]
+fn a_programmer_with_no_locomotive_stops_at_once() {
+    // Nothing answering the first setting: no use asking about the other 51 CVs.
+    let Some(boards) = fake_boards(&["--shield"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+$p = decoder_programmer(decoder_definition("nmra"), $base)
+$p.on_progress = function($done, $total, $cv) {{
+    print([$done, $total, $cv])
+}}
+$p.on_done = function($what, $error) {{
+    global $p
+    print([$what, $error, $p.busy])
+}}
+$p.read_all(tries: 1)
+"#,
+        boards.base
+    );
+    let out = run("programmer-nobody", &script);
+    drop(boards);
+    assert!(out.success, "{}", out.stderr);
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(lines[0], "[1, 52, 1]");
+    assert!(lines[1].starts_with("[\"read_all\", \"CV 1: no decoder answered on the programming track"), "{}", out.stdout);
+    assert!(lines[1].ends_with(", false]"), "{}", out.stdout);
+    assert_eq!(lines.len(), 2, "{}", out.stdout);
+}
+
+#[test]
+fn a_programmer_keeps_edits_and_loads_where_it_should() {
+    // A reading of some settings keeps the changes to the others that share their CV; a decoder
+    // without the first CV asked isn't taken for no decoder (CV 8 tells); a loaded CV stays loaded
+    // when one of its settings is changed.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=3,29=6,8=141"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+$d = decoder_definition(name: "small", standard: false, settings: [_
+    ["name": "Start voltage", "cv": 2], _
+    ["name": "Short address", "cv": 1, "min": 1, "max": 127], _
+    ["name": "Speed steps", "cv": 29, "bit": 1, "choices": [0: "14", 1: "28/128"]], _
+    ["name": "Analog running", "cv": 29, "bit": 2]])
+$p = decoder_programmer($d, $base)
+$p.on_done = function($what, $error) {{
+    global $p
+    print([$what, $error])
+    if $what == "read_all" {{
+        print([$p.state("Start voltage"), $p.problems[2], $p.value("Short address")])
+        $p.set_value("Analog running", false)
+        $p.read("Speed steps")
+    }} else {{
+        print([$p.value("Analog running"), $p.state("Analog running"), $p.state("Speed steps"), $p.cvs[29]])
+        $q = decoder_programmer($d, $base)
+        $q.load_cvs([29: 34, 8: 99])
+        $q.set_value("Analog running", true)
+        print([$q.state("Speed steps"), $q.state("Analog running"), $q.cvs[29], $q.cvs[8]])
+    }}
+}}
+$p.read_all(tries: 1)
+"#,
+        boards.base
+    );
+    let out = run("programmer-keeps", &script);
+    drop(boards);
+    assert!(out.success, "{}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        concat!(
+            "[\"read_all\", \"1 CV couldn't be read (the decoder may not have it): see problems\"]\n",
+            "[\"unknown\", \"the decoder didn't answer for this CV (it may not have it)\", 3]\n",
+            "[\"read\", null]\n",
+            "[false, \"edited\", \"read\", 2]\n",
+            "[\"loaded\", \"edited\", 38, null]\n",
+        )
+    );
+}
+
+#[test]
+fn a_programmer_on_the_main_refuses_to_change_the_address() {
+    // On the main, a change of the address the decoder answers to would leave the writes after it
+    // unheard: refused before anything is sent. Writing the same address is fine.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$p = decoder_programmer(decoder_definition("nmra"), locomotive(3))
+$p.set_value("Short address", 5)
+$p.set_value("Acceleration", 9)
+try {
+    $p.write_changes()
+} catch $e {
+    print($e.message)
+}
+$q = decoder_programmer(decoder_definition("nmra"), locomotive(3))
+$q.load_cvs([29: 38])
+try {
+    $q.write_all()
+} catch $e {
+    print($e.type)
+}
+$r = decoder_programmer(decoder_definition("nmra"), locomotive(3))
+$r.set_value("Short address", 3)
+$r.on_done = function($what, $error) {
+    global $base
+    print([$what, $error, $base.decoder(3)["cvs"]])
+}
+$r.write_changes()
+"#;
+    let out = run("programmer-main-address", script);
+    assert!(out.success, "{}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        concat!(
+            "decoder_programmer.write_changes(): on the main, the locomotive's address can't change (the writes after it would go unheard): change it on the programming track\n",
+            "programming_error\n",
+            "[\"write_changes\", null, [1: 3]]\n",
+        )
+    );
+}
+
+/// Runs an example on the hidden test screen with stand-in boards, after `driver` (Leah lines run as
+/// the example starts); what it printed, or None when there is no Leah with windows or no screen.
+fn run_example_on_screen(test: &str, example: &str, boards: &FakeBoards, driver: &str, quit_after_ms: u32) -> Option<String> {
+    let gui = std::env::var_os("LEAH_GUI").map(PathBuf::from).unwrap_or_else(|| home().join("Leah_Dev/target/all_addons/debug/leah"));
+    let screen = home().join("Leah_Dev/tools/wayland_test_screen.sh");
+    if !gui.is_file() || !screen.is_file() {
+        eprintln!("skipped: no Leah with windows ({}) or no hidden test screen", gui.display());
+        return None;
+    }
+    let dir = addons_folder(test);
+    let list = dir.join("ports.txt");
+    std::fs::write(&list, format!("{}\t2341\t0042\t\n", boards.base)).unwrap();
+    let file = dir.join("script.leah");
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(example);
+    std::fs::write(&file, format!("include \"{}\"\n{driver}", example.display())).unwrap();
+    let out = Command::new("sh")
+        .arg(&screen)
+        .arg("--gui")
+        .arg(&gui)
+        .arg(&file)
+        .env("LEAH_3RD_PARTY_ADDONS", &dir)
+        .env("LEAH_USER_ADDONS", "")
+        .env("LEAH_TEST_DCC_PORTS", &list)
+        .env("LEAH_TEST_INTERACT", "")
+        .env("LEAH_QUIT_AFTER_MS", quit_after_ms.to_string())
+        .output()
+        .expect("the hidden screen runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    Some(format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+}
+
+#[test]
+fn the_decoder_workshop_identifies_a_decoder_and_reads_it() {
+    // Identify picks the decoder's definition (a Tsunami2 diesel); Read all fills the rows by name,
+    // and the speed table's rows hide while the decoder uses three points.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=3,29=6,8=141,7=71,19=0,105=1,106=4,253=1,254=2,255=8,256=36"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let driver = "call_later(300, function() {\n    global $connect\n    $connect.click()\n    call_later(3500, function() {\n        global $identify\n        $identify.click()\n        call_later(4500, function() {\n            global $status, $definitions\n            print($definitions.selected_row_tag)\n            print($status.text)\n            quit()\n        })\n    })\n})\n";
+    let Some(printed) = run_example_on_screen("workshop-identify", "decoder_workshop.leah", &boards, driver, 15000) else { return };
+    drop(boards);
+    assert!(printed.contains("soundtraxx_tsunami2_diesel\nThe decoder: Throttle-Up (Soundtraxx), Tsunami2. Its definition: soundtraxx_tsunami2_diesel. Now Read all."), "{printed}");
+
+    // Every one of the NMRA set's CVs there, so Read all takes about ten seconds.
+    let mut cvs: Vec<String> = vec!["1=5".into(), "29=6".into(), "8=141".into(), "7=82".into(), "3=12".into()];
+    for cv in [2, 4, 5, 6, 11, 15, 16, 17, 18, 19, 21, 22, 23, 24, 65, 66, 95, 105, 106].into_iter().chain(67..=94) {
+        cvs.push(format!("{cv}=0"));
+    }
+    let Some(boards) = fake_boards(&["--shield", "--cvs", &cvs.join(",")]) else { return };
+    let driver = "call_later(300, function() {\n    global $connect\n    $connect.click()\n    call_later(3500, function() {\n        global $read_all\n        $read_all.click()\n        call_later(14000, function() {\n            global $status, $settings\n            print($status.text)\n            print([$settings.find_row(\"Short address\").value, $settings.find_row(\"Acceleration\").value, $settings.find_row(\"Address used\").value, $settings.find_row(\"Analog running\").value, $settings.find_row(\"Speed step 1\").visible])\n            quit()\n        })\n    })\n})\n";
+    let Some(printed) = run_example_on_screen("workshop-read", "decoder_workshop.leah", &boards, driver, 25000) else { return };
+    drop(boards);
+    assert!(printed.contains("Read.\n[5, 12, \"short\", true, false]"), "{printed}");
+}
+
+#[test]
+fn a_programmer_with_nothing_to_write_leaves_the_track_alone() {
+    // write_changes() with no changes: done at once, nothing sent, the main track's power as it was.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=3,29=6"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+$base.power = true
+$p = decoder_programmer(decoder_definition("nmra"), $base)
+$p.on_done = function($what, $error) {{
+    global $base
+    print([$what, $error, $base.power])
+}}
+$p.write_changes()
+"#,
+        boards.base
+    );
+    let out = run("programmer-empty", &script);
+    drop(boards);
+    assert!(out.success, "{}", out.stderr);
+    assert_eq!(out.stdout, "[\"write_changes\", null, true]\n");
 }

@@ -444,7 +444,7 @@ impl DccBase {
     }
 
     /// The programming track taken for readings, or the error saying why it can't be.
-    fn reading_turn(&self, what: &str, call: &Call) -> Result<board::ReadingTurn, Error> {
+    pub(crate) fn reading_turn(&self, what: &str, call: &Call) -> Result<board::ReadingTurn, Error> {
         if self.simulated() {
             return Err(hardware(format!("{what}: reading a decoder's settings needs Leah's base station board with its motor shield (its channel B is the programming track)")));
         }
@@ -472,20 +472,28 @@ impl DccBase {
         self.current.set(0);
         std::thread::spawn(move || {
             let done = read(&turn);
-            drop(turn);
             let (value, error) = match done {
                 Ok(v) => (v, Value::Null),
                 Err(e) => (Value::Null, Value::from(e)),
             };
-            // ("No more" first, then the event: its function may start another reading, whose "yes"
-            // must be the newer word; Leah keeps the script waiting for the event meanwhile.)
+            // ("No more" first, then the programming track let go of, then the event: a reading
+            // started after it (by the event's function, or any other) must be the newer word; Leah
+            // keeps the script waiting for the event meanwhile.)
             events.keep_running(false);
+            drop(turn);
             events.fire(event, vec![what, value, error]);
         });
     }
 
+    /// As a reading starts on a thread of its own: the main track's power goes off for it, as the
+    /// board says in its "OFF" line.
+    pub(crate) fn reading_starts(&self) {
+        self.power.set(false);
+        self.current.set(0);
+    }
+
     /// After a reading on the script's thread: the main track's power was turned off by it.
-    fn after_reading(&self, call: &Call) {
+    pub(crate) fn after_reading(&self, call: &Call) {
         self.take_heard(call);
         self.power.set(false);
         self.current.set(0);
@@ -1098,6 +1106,44 @@ fn function_number(name: &str, v: &Value) -> Result<usize, Error> {
     Ok(n as usize)
 }
 
+impl Locomotive {
+    /// Sends writes on the main, each twice (S-9.2.1), spaced `pause` ms from the last write to this
+    /// locomotive: some decoders miss one sent sooner.
+    fn send_writes(&self, writes: Vec<(Vec<u8>, String)>, pause: i64, call: &Call) -> Result<(), Error> {
+        for (packet, words) in writes {
+            if let Some(last) = self.last_write.get() {
+                let wait = std::time::Duration::from_millis(pause as u64).saturating_sub(last.elapsed());
+                if !wait.is_zero() {
+                    std::thread::sleep(wait);
+                }
+            }
+            self.base.send_times(packet, format!("{}: {words}", self.name()), None, 2, call)?;
+            self.last_write.set(Some(std::time::Instant::now()));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn address(&self) -> u16 {
+        self.address
+    }
+
+    pub(crate) fn is_long(&self) -> bool {
+        self.long
+    }
+
+    /// Writes a setting on the main, as `write_cv` does (CV 31 and 32 first for an indexed one).
+    pub(crate) fn write_on_main(&self, cv: u16, value: u8, index: Option<(u8, u8)>, call: &Call) -> Result<(), Error> {
+        let mut writes = Vec::new();
+        if let Some((high, low)) = index {
+            for (n, v) in [(31u16, high), (32u16, low)] {
+                writes.push((dcc::ops_write_byte(self.address, self.long, n, v), format!("CV {n} = {v} (on the main)")));
+            }
+        }
+        writes.push((dcc::ops_write_byte(self.address, self.long, cv, value), format!("CV {cv} = {value} (on the main)")));
+        self.send_writes(writes, WRITE_PAUSE_MS, call)
+    }
+}
+
 impl Object for Locomotive {
     fn kind(&self) -> &str {
         "locomotive"
@@ -1213,17 +1259,7 @@ impl Object for Locomotive {
                     }
                 }
                 writes.push((packet, words));
-                for (packet, words) in writes {
-                    // (Spaced from the last write to this locomotive: some decoders miss one sent sooner.)
-                    if let Some(last) = self.last_write.get() {
-                        let wait = std::time::Duration::from_millis(pause as u64).saturating_sub(last.elapsed());
-                        if !wait.is_zero() {
-                            std::thread::sleep(wait);
-                        }
-                    }
-                    self.base.send_times(packet, format!("{}: {words}", self.name()), None, 2, call)?;
-                    self.last_write.set(Some(std::time::Instant::now()));
-                }
+                self.send_writes(writes, pause, call)?;
                 Ok(Value::Null)
             }
             other => Err(call.unknown_function("locomotive", other, LOCO_FUNCS)),

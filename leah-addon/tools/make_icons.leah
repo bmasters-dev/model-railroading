@@ -37,6 +37,27 @@ $icons["dcc_program_job"] = function() {
     ic.fill(7, 0, 2, 4, ic.green)
     ic.shape([[4, 3.5], [12, 3.5], [8, 7.5]], ic.green)
 }
+` A decoder definition: a sheet of settings, each row a name and its bits.
+$icons["decoder_definition"] = function() {
+    ic.rbox(2, 0.5, 12, 15, ic.face, ic.edge, 1)
+    foreach [3, 7, 11] as $y {
+        ic.fill(4, $y, 4, 1.5, ic.mid)
+        ic.fill(9.5, $y, 1, 1.5, ic.accent)
+        ic.fill(11, $y, 1, 1.5, ic.accent_light)
+    }
+}
+` A decoder programmer: a decoder chip with its pins, a setting read up out of it and one written down.
+$icons["decoder_programmer"] = function() {
+    foreach [2, 5] as $x {
+        ic.fill($x, 3.5, 1, 1.5, ic.edge)
+        ic.fill($x, 12, 1, 1.5, ic.edge)
+    }
+    ic.rbox(0.5, 5, 7.5, 7, ic.mid, ic.ink, 1)
+    ic.fill(9.75, 4, 1.5, 9, ic.green)
+    ic.shape([[8.5, 4.5], [12.5, 4.5], [10.5, 1]], ic.green)
+    ic.fill(13, 3, 1.5, 9, ic.accent)
+    ic.shape([[11.75, 11.5], [15.75, 11.5], [13.75, 15]], ic.accent)
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)

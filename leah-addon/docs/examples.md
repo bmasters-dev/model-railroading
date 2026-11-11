@@ -44,3 +44,26 @@ Electronic Solutions Ulm GmbH
 38
 1
 ```
+
+## A decoder definition
+
+A decoder's settings by name: the NMRA's standard set built in, a maker's over it, and the bit work
+both ways.
+
+```leah
+$d = decoder_definition("soundtraxx_tsunami2_diesel")
+print([$d.maker, count($d.settings), $d.groups[0]])
+print($d.setting("Coupler")["choices"])
+print([$d.value_of("Coupler", [126: 0x81]), $d.value_of("Train brake rate", [118: 0x85])])
+print($d.cvs_of("Speed steps", "14", [29: 6]))
+print(decoder_definition_for(["maker_id": 141, "version": 82]).name)
+```
+
+Output:
+```
+[141, 115, "Address"]
+["medium", "heavy", "link-and-pin"]
+["heavy", -5]
+[29: 4]
+nmra
+```

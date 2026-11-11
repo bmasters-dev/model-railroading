@@ -342,6 +342,17 @@ impl Definition {
             }
         }
         // (Two settings sharing a bit: one would undo the other.)
+        // (One CV number on one index page only, for now: the programmer knows a CV by its number.)
+        type Page = Option<(u8, u8)>;
+        let mut pages: BTreeMap<u16, (Page, &str)> = BTreeMap::new();
+        for s in &settings {
+            for cv in &s.cvs {
+                let (page, first) = *pages.entry(*cv).or_insert((s.index, &s.name));
+                if page != s.index {
+                    return Err(format!("the settings \"{first}\" and \"{}\" use CV {cv} on different index pages: one CV number on one page only, for now", s.name));
+                }
+            }
+        }
         // (Each CV, with its index page: the bits taken, and by which setting last.)
         type Place = (u16, Option<(u8, u8)>);
         let mut taken: BTreeMap<Place, (u8, &str)> = BTreeMap::new();
@@ -390,13 +401,94 @@ fn compare(a: &Value, op: &str, b: &Value) -> bool {
 }
 
 /// The built-in definitions: their names, and what they are for.
-pub const BUILT_IN: &[(&str, &str)] = &[("nmra", "The NMRA's standard settings, which every decoder has")];
+pub const BUILT_IN: &[(&str, &str)] = &[
+    ("nmra", "The NMRA's standard settings, which every decoder has"),
+    ("soundtraxx_tsunami2_diesel", "SoundTraxx Tsunami2 diesel sound decoders (CV 8 = 141, CV 7 = 71, a diesel's sounds)"),
+];
 
 fn built_in(name: &str) -> Option<Definition> {
     match name {
         "nmra" => Definition::build("nmra".into(), None, Vec::new(), Vec::new(), true).ok(),
+        "soundtraxx_tsunami2_diesel" => Definition::build(name.into(), Some(141), vec![71], tsunami2_diesel(), true).ok(),
         _ => None,
     }
+}
+
+/// SoundTraxx's Tsunami2 diesel decoders: the settings modellers change most, from SoundTraxx's
+/// "Tsunami2 Diesel Technical Reference". The sound lists (which horn number is which horn) are
+/// SoundTraxx's, in its sound selection references, so those settings are numbers here.
+fn tsunami2_diesel() -> Vec<Setting> {
+    let mut s = vec![
+        Setting::new("Master volume", 128, "Sound volumes").default(192).help("The volume of every sound: 0 silent, 255 the loudest."),
+    ];
+    let channels = [
+        "Airhorn", "Bell", "Prime mover", "Air compressor", "Dynamic brake", "Radiator fans", "Alarm bell", "Gas turbine", "Coupler", "Train brake apply and release",
+        "Independent brake apply", "Independent brake release", "GenSet prime mover 2", "GenSet prime mover 3", "Poppet valve", "Steam or HEP generator", "Cab doors", "",
+        "Relay clicks", "Emergency brake", "Glad hand release", "All aboard and coach doors", "", "", "Clickety-clack", "Sander valve", "Fuel loading", "Air conditioner",
+        "Wrenches", "Pneumatic oilers", "Toilet flush", "Cab chatter",
+    ];
+    for (i, name) in channels.iter().enumerate() {
+        if !name.is_empty() {
+            s.push(Setting::new(&format!("{name} volume"), 129 + i as u16, "Sound volumes").help("This sound's share of the master volume: 0 silent, 255 all of it."));
+        }
+    }
+    s.extend([
+        Setting::new("Airhorn", 120, "Sound choices").bits(0, 6).range(0, 43).help("Which airhorn: 0 is the first in SoundTraxx's list of this decoder's horns."),
+        Setting::new("Alternate airhorn", 121, "Sound choices").bits(0, 6).range(0, 44).help("0 for none; another number puts that horn of SoundTraxx's list on the short-horn key."),
+        Setting::new("Bell", 122, "Sound choices").bits(0, 6).help("Which bell: 0 is the first in SoundTraxx's list of this decoder's bells."),
+        Setting::new("Grade-crossing bell", 122, "Sound choices").flag(7).help("The bell rings with the grade-crossing horn sequence."),
+        Setting::new("Prime mover", 123, "Sound choices").help("Which engine sound: 0 is the first in SoundTraxx's list of this decoder's prime movers."),
+        Setting::new("Air compressor", 124, "Sound choices").help("Which air compressor: 0 is the first in SoundTraxx's list."),
+        Setting::new("Poppet valve", 125, "Sound choices").choice(&[(0, "poppet valve"), (1, "electronic air dryer")]),
+        Setting::new("Coupler", 126, "Sound choices").bits(0, 2).choice(&[(0, "medium"), (1, "heavy"), (2, "link-and-pin")]),
+        Setting::new("Uncouple when the function is turned off", 126, "Sound choices").flag(7).help("Couple when the coupler's function is turned on, uncouple when it is turned off."),
+        Setting::new("Emergency stop idles the engine", 112, "Sound options").flag(0).help("After an emergency stop the engine idles, rather than shutting down."),
+        Setting::new("Low-oil alarm bell", 112, "Sound options").flag(1).help("The alarm bell heard before the engine starts."),
+        Setting::new("Generator", 112, "Sound options").bits(2, 1).choice(&[(0, "steam generator"), (1, "head end power")]),
+        Setting::new("Idle notch", 112, "Sound options").flag(3).help("The engine stays at idle at speed step 1."),
+        Setting::new("Quiet mode time-out", 113, "Sound options").help("Seconds stopped, with every function off, before the sounds go quiet (0: never)."),
+        Setting::new("Auto-bell speed step", 193, "Sound options").bits(0, 7).help("The speed step at which the bell rings by itself (0: never)."),
+        Setting::new("Auto-bell time", 194, "Sound options").help("How many seconds the automatic bell rings (0: never)."),
+        Setting::new("Dynamic brake rate", 116, "Brakes").help("Added to the deceleration while the dynamic brake is on (-127 to 127; 0: no effect)."),
+        Setting::new("Independent brake rate", 117, "Brakes").help("Added to the deceleration while the independent brake is on (-127 to 127; 0: no effect)."),
+        Setting::new("Train brake rate", 118, "Brakes").help("Added to the deceleration while the train brake is on (-127 to 127; 0: no effect)."),
+        Setting::new("Flash rate", 59, "Lights").bits(0, 4).help("How fast flashing lights flash: 0 the fastest, 15 the slowest."),
+        Setting::new("Grade-crossing hold time", 60, "Lights").bits(0, 4).help("Seconds the grade-crossing lights keep flashing (0 to 15)."),
+        Setting::new("Dimmer level", 63, "Lights").help("The headlight's brightness while dimmed: 0 dark, 255 full."),
+        Setting::new("Master brightness", 64, "Lights").default(255).help("The brightness of every light: 0 dark, 255 full."),
+        Setting::new("Back-EMF", 217, "Motor").flag(1).help("Load compensation: the motor keeps its speed up grades and round curves."),
+        Setting::new("Auto-stop", 217, "Motor").flag(3).help("A change of direction stops the motor for half a second first."),
+        Setting::new("Back-EMF intensity", 212, "Motor").default(255).help("How strongly the speed is held: 0 none, 255 the most."),
+        Setting::new("Back-EMF Kp", 209, "Motor").default(48).help("The control loop's proportional gain."),
+        Setting::new("Back-EMF Ki", 210, "Motor").default(16).help("The control loop's integral gain."),
+    ]);
+    for x in s.iter_mut() {
+        if (116..=118).contains(&x.cvs[0]) {
+            x.kind = Kind::Signed;
+            x.min = -127;
+            x.max = 127;
+        }
+    }
+    s
+}
+
+/// The built-in definition for a decoder `identify_decoder()` described: its maker's, by CV 7 and the
+/// kind of sound, or the NMRA's.
+pub fn definition_for(call: &mut Call) -> Result<Value, Error> {
+    call.count_between(1, 1)?;
+    call.only_options(&[])?;
+    let id = call.arg(0);
+    if !matches!(id, Value::Array(_)) || id.get("maker_id").is_none() {
+        return Err(Error::type_error("decoder_definition_for(): give what dcc_base.identify_decoder() gave"));
+    }
+    let maker = id.get("maker_id").and_then(Value::as_int);
+    let version = id.get("version").and_then(Value::as_int);
+    let sound = id.get("product").and_then(|p| p.get("sound")).and_then(Value::as_text);
+    let name = match (maker, version, sound) {
+        (Some(141), Some(71), Some("diesel")) => "soundtraxx_tsunami2_diesel",
+        _ => "nmra",
+    };
+    Ok(call.new_object(DecoderDefinition(built_in(name).expect("a built-in definition"))))
 }
 
 /// A setting from a script's array (`decoder_definition(settings: ...)` or a definition file).
@@ -766,10 +858,30 @@ mod tests {
     }
 
     #[test]
+    fn the_tsunami2_diesel_definition_is_whole() {
+        let d = built_in("soundtraxx_tsunami2_diesel").unwrap();
+        assert_eq!(d.maker, Some(141));
+        assert!(d.setting("Short address").is_some());
+        assert_eq!(d.setting("Cab chatter volume").unwrap().cvs, [160]);
+        assert_eq!(d.setting("Relay clicks volume").unwrap().cvs, [147]);
+        let cvs: BTreeMap<u16, u8> = [(126, 0x81), (217, 10), (118, 0x85)].into_iter().collect();
+        assert_eq!(d.setting("Coupler").unwrap().value_from(&cvs), Some(Value::from("heavy")));
+        assert_eq!(d.setting("Uncouple when the function is turned off").unwrap().value_from(&cvs), Some(Value::from(true)));
+        assert_eq!(d.setting("Back-EMF").unwrap().value_from(&cvs), Some(Value::from(true)));
+        assert_eq!(d.setting("Train brake rate").unwrap().value_from(&cvs), Some(Value::from(-5)));
+    }
+
+    #[test]
     fn a_definition_refuses_two_settings_on_one_bit() {
         let mut own = Setting::new("Mute", 29, "Sound").flag(5);
         assert!(Definition::build("x".into(), None, vec![], vec![own.clone()], true).unwrap_err().contains("both use bits of CV 29"));
         own.cvs = vec![120];
-        assert!(Definition::build("x".into(), None, vec![], vec![own], true).is_ok());
+        assert!(Definition::build("x".into(), None, vec![], vec![own.clone()], true).is_ok());
+        // (One CV number on one index page only.)
+        let mut a = Setting::new("Effect 1", 257, "Lights");
+        a.index = Some((0, 1));
+        let mut b = Setting::new("Volume 1", 257, "Sound");
+        b.index = Some((0, 2));
+        assert!(Definition::build("x".into(), None, vec![], vec![a, b], true).unwrap_err().contains("different index pages"));
     }
 }

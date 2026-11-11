@@ -12,6 +12,7 @@ mod board;
 mod dcc;
 mod definitions;
 mod makers;
+mod programmer;
 
 use leah_addon_kit::{Function, Needs, Value};
 
@@ -47,13 +48,16 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("make_cv29", &[], base::make_cv29 as Function),
             ("decoder_definition", &[], definitions::new_definition as Function),
             ("decoder_definitions", &[], definitions::definitions_list as Function),
+            ("decoder_definition_for", &[], definitions::definition_for as Function),
             ("read_decoder_definition_file", &[Needs::Files], definitions::read_definition_file as Function),
+            ("decoder_programmer", &[], programmer::new_programmer as Function),
         ],
         needs: Some(needs),
         objects: vec![
             ("dcc_base", &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"], &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit", "identify_decoder", "reset_decoder", "find_decoder_locks", "unlock_decoder", "lock_decoder"], &["on_read", "on_write"]),
             ("locomotive", &["address", "long", "base", "speed", "direction"], &["set_function", "function", "stop", "emergency_stop", "write_cv", "write_cv_bit"], &[]),
             ("decoder_definition", &["name", "maker", "versions", "settings", "groups", "cvs"], &["setting", "value_of", "cvs_of", "is_shown"], &[]),
+            ("decoder_programmer", &["definition", "main_track", "values", "states", "cvs", "busy", "problems"], &["value", "set_value", "state", "read_all", "read", "write_changes", "write_all", "load_cvs", "cancel"], &["on_progress", "on_done"]),
             ("dcc_program_job", &["port", "role", "board", "finished", "succeeded", "message"], &["wait"], &["on_finished"]),
         ],
         controls: vec![],
