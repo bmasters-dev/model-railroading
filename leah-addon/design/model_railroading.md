@@ -324,6 +324,14 @@ implementers agree to its compatibility testing and to fix what it finds within 
 owner doesn't agree to those terms, so Leah won't support BiDiB, and its specification isn't kept
 in the private reference either. (A mainly European bus; nothing in the plan depends on it.)
 
+## Decided: how Leah names its phone throttle server (Claude, 2026-11-11)
+
+"WiThrottle" is a trademark of the protocol's author, who publishes no specification. Leah's server
+(plan item 8) is described as working **with WiThrottle apps** (Engine Driver, WiThrottle, and others),
+never as "Leah's WiThrottle"; its object gets a name of Leah's own (`phone_throttle_server`, to be
+settled when it is designed). The protocol is implemented from facts in the descriptions that exist,
+never from another program's code.
+
 ## Rules to keep (agreed in principle)
 
 - **Emergency stop** always works, from code and from every throttle control.
