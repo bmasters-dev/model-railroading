@@ -34,8 +34,17 @@
 //
 // Safety: the power turns off by itself, saying why with "OFF ...", when
 //   - three seconds pass without a line from the PC (it ended, crashed, or lost the cable);
-//   - the current stays over the limit for 5 ms (a short on the track: a coin, a derailed wheel);
-//   - the shield's driver says it has a fault (too hot, or a short it caught itself).
+//   - the current is over the limit for about 5 ms all told (a short on the track: a coin, a derailed
+//     wheel): a count that rises twice as fast over the limit as it falls under it, so a short the
+//     driver chops on and off still adds up (the first 20 ms after the power comes on are left out,
+//     for the track's and decoders' capacitors to charge);
+//   - the shield's driver says it has a fault (too hot, a short it caught itself, or no supply in the
+//     shield's jack), at once.
+// The current is sampled by the analog reader's own interrupt, about 9,600 times a second, which cuts
+// the power itself: nothing the PC sends, or the main loop is busy with, delays it. After cutting off
+// for the current or a fault, it won't turn the power on again for 2 seconds. Without the shield
+// found, pin 3 is never turned on. (No watchdog timer: some Megas' bootloaders never come out of the
+// reset it makes.)
 
 #include <Arduino.h>
 
@@ -45,7 +54,6 @@ const uint8_t MOST_BYTES = 6, PLACES = 32, WAITING = 8, PREAMBLE = 14, TIMES_NOW
 const uint32_t QUIET_LIMIT = 3000;
 const uint8_t SIGNAL_PIN = 12, POWER_PIN = 3, BRAKE_PIN = 9, SENSE_PIN = A0, FAULT_PIN = A4;
 const float MA_PER_STEP = 5.08;
-const uint8_t OVER_FOR_MS = 5;
 
 struct Packet { uint8_t bytes[MOST_BYTES]; uint8_t count; };
 
@@ -55,8 +63,17 @@ Packet waiting[WAITING];             // the packets to send now, a ring
 volatile uint8_t waiting_head = 0, waiting_tail = 0;
 volatile bool power = false;
 bool shield = false;
+volatile uint16_t limit_steps = 1500 / 5.08;   // the limit, in the analog reader's steps
 uint16_t limit_ma = 1500;
-float current_ma = 0;                // smoothed, for saying
+// The analog reader's interrupt's own: the over-limit count, the samples since the power came on, the
+// sum for the average said, and why it cut the power (0: it didn't; 1: the current; 2: a fault).
+const uint16_t TRIP_COUNT = 96, BLANK_SAMPLES = 192;
+volatile uint16_t over_count = 0, since_on = 0, tripped_steps = 0;
+volatile uint32_t sum_steps = 0;
+volatile uint16_t sum_count = 0;
+volatile uint8_t tripped = 0;
+uint32_t tripped_at = 0;
+float current_ma = 0;                // the average over the last half second, for saying
 
 // The interrupt's own: the packet going out and where in it, and a packet sent now while it repeats.
 Packet going, again;
@@ -99,12 +116,35 @@ ISR(TIMER1_OVF_vect) {
   if (next_bit()) { OCR1A = ONE_TOP; OCR1B = ONE_MIDDLE; } else { OCR1A = ZERO_TOP; OCR1B = ZERO_MIDDLE; }
 }
 
+// Cuts the power from inside an interrupt (interrupts are off already).
+void cut_power_now(uint8_t why) {
+  PORTE &= ~_BV(PE5);                                                 // pin 3 low: the shield's output off
+  TCCR1A &= ~_BV(COM1B1);
+  PORTB &= ~_BV(PB6);                                                 // pin 12 low
+  power = false;
+  tripped = why;
+}
+
+// The analog reader, running freely on A0: each sample the track's current.
+ISR(ADC_vect) {
+  uint16_t steps = ADC;
+  if (!power) return;
+  sum_steps += steps;
+  sum_count++;
+  if (!(PINF & _BV(PF4))) { tripped_steps = steps; cut_power_now(2); return; }   // A4 low: a fault
+  if (since_on < BLANK_SAMPLES) { since_on++; return; }
+  if (steps > limit_steps) over_count += 2; else if (over_count) over_count--;
+  if (over_count >= TRIP_COUNT) { tripped_steps = steps; over_count = 0; cut_power_now(1); }
+}
+
 void set_power(bool on) {
   noInterrupts();
   power = on;
   if (on) {
+    over_count = 0;
+    since_on = 0;
     TCCR1A |= _BV(COM1B1);                                            // the signal first...
-    digitalWrite(POWER_PIN, HIGH);                                    // ...then the shield's output on
+    if (shield) digitalWrite(POWER_PIN, HIGH);                        // ...then the shield's output on
   } else {
     digitalWrite(POWER_PIN, LOW);                                     // the shield's output off first
     TCCR1A &= ~_BV(COM1B1);
@@ -157,7 +197,14 @@ void obey(const char *line) {
   const char *c = line + 1;
   switch (line[0]) {
     case '.': return;
-    case '+': set_power(true); Serial.println("OK"); return;
+    case '+':
+      if (tripped_at && millis() - tripped_at < 2000) {
+        Serial.println("OFF it cut the power off a moment ago: it waits 2 seconds before the power can come on again");
+        return;
+      }
+      set_power(true);
+      Serial.println("OK");
+      return;
     case '-': set_power(false); Serial.println("OK"); return;
     case 'X':
       set_power(false);
@@ -181,6 +228,7 @@ void obey(const char *line) {
       long n = read_number(c);
       if (n < 10 || n > 5000) { Serial.println("ERR a current limit is 10 to 5000 mA"); return; }
       limit_ma = n;
+      noInterrupts(); limit_steps = n / MA_PER_STEP; interrupts();
       Serial.println("OK");
       return;
     }
@@ -198,8 +246,10 @@ void obey(const char *line) {
       if (!read_packet(c, p)) return;
       uint8_t after = (waiting_head + 1) % WAITING;
       if (after == waiting_tail) { Serial.println("ERR too many packets waiting"); return; }
+      noInterrupts();
       waiting[waiting_head] = p;
       waiting_head = after;
+      interrupts();
       Serial.println("OK");
       return;
     }
@@ -225,6 +275,13 @@ void setup() {
   pinMode(SIGNAL_PIN, OUTPUT);
   digitalWrite(SIGNAL_PIN, LOW);
   shield = find_shield();
+  if (shield) {
+    // The analog reader on A0 (ADC0), free-running, 16 MHz / 128 = 125 kHz: about 9,600 samples a
+    // second, each one's interrupt watching the current.
+    ADMUX = _BV(REFS0);                                               // AVcc (5 V), ADC0
+    ADCSRB = 0;                                                       // free-running, ADC0..7
+    ADCSRA = _BV(ADEN) | _BV(ADSC) | _BV(ADATE) | _BV(ADIE) | _BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0);
+  }
   going = IDLE;
   noInterrupts();
   TCCR1A = _BV(WGM11) | _BV(WGM10);                 // fast PWM, top OCR1A; OC1B joined when powered
@@ -239,8 +296,7 @@ void setup() {
 void loop() {
   static char line[48];
   static uint8_t used = 0;
-  static uint32_t last_word = 0, last_sample = 0, last_said = 0;
-  static uint8_t over_ms = 0, fault_ms = 0;
+  static uint32_t last_word = 0, last_said = 0;
   while (Serial.available()) {
     char c = Serial.read();
     if (c == '\r') continue;
@@ -250,33 +306,29 @@ void loop() {
   if (power && millis() - last_word > QUIET_LIMIT) {
     power_off_because("no word from the PC for 3 seconds");
   }
-  if (shield && millis() != last_sample) {
-    last_sample = millis();
-    if (power) {
-      float now_ma = analogRead(SENSE_PIN) * MA_PER_STEP;
-      current_ma += (now_ma - current_ma) * 0.05;
-      over_ms = now_ma > limit_ma ? over_ms + 1 : 0;
-      fault_ms = digitalRead(FAULT_PIN) == LOW ? fault_ms + 1 : 0;
-      if (over_ms >= OVER_FOR_MS) {
-        over_ms = 0;
-        set_power(false);                                             // first, then the words
-        Serial.print("OFF the current was over the limit (");
-        Serial.print((long)now_ma);
-        Serial.print(" mA, the limit ");
-        Serial.print(limit_ma);
-        Serial.println(" mA): is something shorting the track?");
-      } else if (fault_ms >= OVER_FOR_MS) {
-        fault_ms = 0;
-        power_off_because("the motor shield's driver reported a fault (too hot, or a short it caught itself)");
-      } else if (millis() - last_said >= 500) {
-        last_said = millis();
-        Serial.print("A ");
-        Serial.println((long)(current_ma + 0.5));
-      }
+  if (tripped) {
+    uint8_t why;
+    uint16_t steps;
+    noInterrupts(); why = tripped; steps = tripped_steps; tripped = 0; interrupts();
+    tripped_at = millis();
+    if (tripped_at == 0) tripped_at = 1;
+    if (why == 1) {
+      Serial.print("OFF the current was over the limit (");
+      Serial.print((long)(steps * MA_PER_STEP));
+      Serial.print(" mA, the limit ");
+      Serial.print(limit_ma);
+      Serial.println(" mA): is something shorting the track?");
     } else {
-      current_ma = 0;
-      over_ms = 0;
-      fault_ms = 0;
+      Serial.println("OFF the motor shield's driver reported a fault (too hot, a short it caught itself, or no supply in the shield's jack)");
     }
+  }
+  if (shield && power && millis() - last_said >= 500) {
+    last_said = millis();
+    uint32_t sum;
+    uint16_t count;
+    noInterrupts(); sum = sum_steps; count = sum_count; sum_steps = 0; sum_count = 0; interrupts();
+    current_ma = count ? (float)sum / count * MA_PER_STEP : 0;
+    Serial.print("A ");
+    Serial.println((long)(current_ma + 0.5));
   }
 }

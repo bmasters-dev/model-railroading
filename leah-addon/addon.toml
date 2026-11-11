@@ -1,7 +1,7 @@
 # What the addon is. (Leah reads the same from the library, through `leah_addon!`; this file is for
 # people and tools.)
 name = "model_railroading"
-version = "0.2.0"
+version = "0.3.0"
 license = "MIT OR Apache-2.0"
-summary = "Model railroading: a DCC base station (simulated, or Leah's own board on USB with a reader board checking its signal) and the locomotives it drives"
+summary = "Model railroading: a DCC base station (simulated, or Leah's own board on USB with its motor shield and a reader board checking its signal) and the locomotives it drives"
 third_party = true

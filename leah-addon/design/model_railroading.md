@@ -218,6 +218,18 @@ its barrel jack, and no locomotive. Decided by Claude (the owner can overrule):
   power off when it stays over the limit for 5 ms**, or the fault line stays low for 5 ms, saying why
   (`OFF the current was over the limit (...)`). The limit (`L <mA>`, 10 to 5000) is 1500 mA at the
   start, and Leah sets it again on connecting. `STATE` adds `shield yes`, `current`, `limit`.
+- **After the code review (2026-11-10):** pin 3 is never turned on without the shield found (a wrong
+  guess means no power, not unwatched power); the current is watched by the analog reader's own
+  interrupt, free-running on A0 at about 9,600 samples a second, which cuts the power itself (no
+  serial traffic or busy loop delays it); the over-limit count rises by 2 a sample over the limit and
+  falls by 1 under it, tripping at 96 (5 ms straight, or a short the driver chops on and off), the
+  first 20 ms after power-on left out for inrush; a fault on A4 cuts at once; after a cut-off for the
+  current or a fault, `+` is refused for 2 seconds (with an `OFF ...` line, so Leah keeps `power`
+  false); the `S` packet's store into the ring is done with interrupts off. No watchdog timer: some
+  Megas' bootloaders loop for ever after its reset, and only a programmer brings them back. On the
+  Leah side: the limit is Leah's (never taken from a `STATE`), `current` goes to 0 when the power
+  changes, and a board that says its hello again after connecting (a brown-out) gets its limit and
+  refresh table sent again, its `power` false, with a warning.
 - **In Leah:** `dcc_base`'s `shield` (read-only), `current` (mA; 0 with the power off, null without a
   shield or simulated), `current_limit` (settable). The bench app shows the current and lets the
   limit be chosen, a 15 mA one among them for trying the cut-off, and shows the board's reason when it

@@ -9,7 +9,7 @@ without a line; while its power is on, what it sends reaches the reader, which s
 
     python3 fake_boards.py [--base normal|silent|old|reader] [--log FILE] [--cut-after SECONDS]
                            [--drop-reader-after SECONDS] [--drop-base-after SECONDS]
-                           [--shield] [--current MILLIAMPS]
+                           [--shield] [--current MILLIAMPS] [--restart-after SECONDS]
 
 It prints the two ports' paths ("BASE /dev/pts/5" and "READER /dev/pts/6") and runs until its
 standard input closes. `--base silent` is a board that says nothing (not running Leah's program);
@@ -20,7 +20,9 @@ board's safety does when the PC goes quiet. `--drop-reader-after` and `--drop-ba
 board's port that long after the base station first heard from the PC, as a pulled cable does.
 `--shield` is a base station with the motor shield on it, its track drawing `--current` mA (0 if not
 given) while the power is on: it says the current every half second, and turns the power off when
-it is over the limit, as the board does.
+it is over the limit, as the board does (and then refuses to turn it on again for 2 seconds).
+`--restart-after` starts the base station again by itself that long after it first heard from the
+PC (as a brown-out does): its hello, its table emptied, its limit back to 1500, its power off.
 """
 
 import os
@@ -49,6 +51,9 @@ def main():
     drawing = 0
     limit = 1500
     last_a = 0.0
+    tripped_at = None
+    restart_after = None
+    restarted = False
     args = sys.argv[1:]
     while args:
         a = args.pop(0)
@@ -66,6 +71,8 @@ def main():
             shield = True
         elif a == "--current":
             drawing = int(args.pop(0))
+        elif a == "--restart-after":
+            restart_after = float(args.pop(0))
     log = open(log_path, "a", buffering=1) if log_path else None
 
     base_master, base_slave = os.openpty()
@@ -130,6 +137,9 @@ def main():
                 if c == ".":
                     continue
                 if c == "+":
+                    if tripped_at is not None and time.time() - tripped_at < 2:
+                        say(base_master, "OFF it cut the power off a moment ago: it waits 2 seconds before the power can come on again")
+                        continue
                     power = True
                     powered_at = time.time()
                 elif c == "-":
@@ -181,7 +191,15 @@ def main():
             power = False
         if power and shield and drawing > limit:
             power = False
+            tripped_at = now
             say(base_master, f"OFF the current was over the limit ({drawing} mA, the limit {limit} mA): is something shorting the track?")
+        if restart_after is not None and not restarted and first_word is not None and now - first_word > restart_after:
+            restarted = True
+            power = False
+            table.clear()
+            waiting.clear()
+            limit = 1500
+            say(base_master, "LEAH DCC BASE 3")
         if power and shield and now - last_a >= 0.5:
             last_a = now
             say(base_master, f"A {drawing}")

@@ -616,3 +616,41 @@ print([$sim.shield, $sim.current, $sim.current_limit])
     );
     assert!(run.stderr.contains("the base station turned the track power off by itself: the current was over the limit (25 mA, the limit 15 mA): is something shorting the track?"), "{}", run.stderr);
 }
+
+#[test]
+fn after_a_cut_off_the_power_waits_and_a_restarted_board_gets_its_table_again() {
+    // Cut off over a 15 mA limit: turning the power on at once is refused for 2 seconds (the power
+    // stays off, with the board's words); later it comes on again.
+    let Some(boards) = fake_boards(&["--shield", "--current", "25"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        "$base = dcc_base(\"{}\")\n$base.current_limit = 15\n$base.power = true\nsleep(400)\nprint($base.power)\n$base.power = true\nsleep(300)\nprint($base.power)\n$base.current_limit = 1500\nsleep(2000)\n$base.power = true\nsleep(700)\nprint([$base.power, $base.current])\n",
+        boards.base
+    );
+    let backoff = run("backoff", &script);
+    drop(boards);
+    assert!(backoff.success, "{}", backoff.stderr);
+    assert_eq!(backoff.stdout, "false\nfalse\n[true, 25]\n");
+    assert!(backoff.stderr.contains("it cut the power off a moment ago: it waits 2 seconds before the power can come on again"), "{}", backoff.stderr);
+
+    // The board starts again by itself: Leah says so, its power is off, and its limit and table are
+    // sent again.
+    let log = std::env::temp_dir().join(format!("model-railroading-restart-log-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let Some(boards) = fake_boards(&["--shield", "--restart-after", "3.5", "--log", log.to_str().unwrap()]) else { return };
+    let script = format!(
+        "$base = dcc_base(\"{}\")\n$base.current_limit = 250\n$loco = locomotive(3)\n$loco.speed = 30\n$base.power = true\nsleep(2500)\nprint([$base.power, $base.current_limit])\n",
+        boards.base
+    );
+    let restart = run("restart", &script);
+    drop(boards);
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    assert!(restart.success, "{}", restart.stderr);
+    assert_eq!(restart.stdout, "[false, 250]\n");
+    assert!(restart.stderr.contains("started again by itself (its power dipped, or it was reset): the track power is off; its refresh table and current limit were sent again"), "{}", restart.stderr);
+    let lines: Vec<&str> = said.lines().filter(|l| *l != "." && *l != "?").collect();
+    assert_eq!(lines, ["X", "L 1500", "L 250", "K 0 03 3F 9F A3", "+", "L 250", "K 0 03 3F 9F A3", "D 0", "D 1", "X"], "{said}");
+}

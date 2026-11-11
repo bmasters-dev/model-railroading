@@ -58,6 +58,10 @@ pub struct DccBase {
     places: Cell<u32>,
     places_of: RefCell<BTreeMap<(u16, bool), SharedPlaces>>,
     timing: RefCell<Option<Timing>>,
+    /// On a board: what each place in its refresh table keeps (to send again if the board starts
+    /// again by itself), and how many hellos it had said by the time it was connected.
+    kept: RefCell<BTreeMap<u8, Vec<u8>>>,
+    hellos: Cell<u32>,
     /// On a board: whether the motor shield is on it, the current it last said (mA), and its limit.
     shield: Cell<bool>,
     current: Cell<i64>,
@@ -121,6 +125,8 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
         places: Cell::new(0),
         places_of: RefCell::new(BTreeMap::new()),
         timing: RefCell::new(None),
+        kept: RefCell::new(BTreeMap::new()),
+        hellos: Cell::new(0),
         shield: Cell::new(false),
         current: Cell::new(0),
         limit: Cell::new(DEFAULT_LIMIT),
@@ -141,7 +147,7 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
         // (A clean start: nothing kept from before, the track power off, the current limit the
         // usual one.)
         link.say("X").and_then(|_| link.say(&format!("L {DEFAULT_LIMIT}"))).map_err(|e| hardware(format!("dcc_base(): can't talk to the board on {port}: {e}")))?;
-        link.heard.lock().unwrap_or_else(|p| p.into_inner()).limit = None;
+        base.hellos.set(link.heard.lock().unwrap_or_else(|p| p.into_inner()).base_hellos);
         base.port = Some(port);
         base.reader_port = reader_port;
         *base.link.borrow_mut() = Some(link);
@@ -174,16 +180,20 @@ impl DccBase {
     /// as warnings; its safety turning the power off among them).
     fn take_heard(&self, call: &Call) {
         let Some(link) = self.link.borrow().as_ref().map(|l| l.heard.clone()) else { return };
+        let mut restarted = false;
         let (packets, said, timing, gone, reader_gone) = {
             let mut h = link.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(shield) = h.shield {
                 self.shield.set(shield);
             }
-            if let Some(limit) = h.limit.take() {
-                self.limit.set(limit);
-            }
+            // (The limit is Leah's: set on connecting and by the script, never taken from the board.)
+            h.limit = None;
             if let Some(current) = h.current.take() {
                 self.current.set(current);
+            }
+            if h.base_hellos != self.hellos.get() {
+                self.hellos.set(h.base_hellos);
+                restarted = true;
             }
             (std::mem::take(&mut h.packets), std::mem::take(&mut h.base_said), h.timing.clone(), h.gone.clone(), h.reader_gone.take())
         };
@@ -197,6 +207,7 @@ impl DccBase {
         for line in said {
             if line.starts_with("OFF ") {
                 self.power.set(false);
+                self.current.set(0);
                 call.warn(format!("the base station turned the track power off by itself: {}", line.trim_start_matches("OFF ")));
             } else {
                 call.warn(format!("the base station on {} said: {line}", self.port.as_deref().unwrap_or("")));
@@ -224,6 +235,21 @@ impl DccBase {
                 }
             }
         }
+        if restarted {
+            // (It started again by itself, a brown-out or a reset: its power is off and its table and
+            // limit are its first ones. They are sent again; the power stays off until the script
+            // turns it on.)
+            self.power.set(false);
+            self.current.set(0);
+            let mut lines = vec![format!("L {}", self.limit.get())];
+            lines.extend(self.kept.borrow().iter().map(|(place, packet)| format!("K {place} {}", dcc::hex(packet))));
+            if let Some(link) = self.link.borrow().as_ref() {
+                for line in lines {
+                    let _ = link.say(&line);
+                }
+            }
+            call.warn(format!("the base station on {} started again by itself (its power dipped, or it was reset): the track power is off; its refresh table and current limit were sent again", self.port.as_deref().unwrap_or("")));
+        }
         if let Some(gone) = gone
             && self.lost.borrow().is_none()
         {
@@ -242,6 +268,7 @@ impl DccBase {
 
     fn give_back_place(&self, place: u8) {
         self.places.set(self.places.get() & !(1 << place));
+        self.kept.borrow_mut().remove(&place);
         if let Some(link) = self.link.borrow().as_ref() {
             let _ = link.say(&format!("D {place}"));
         }
@@ -317,7 +344,10 @@ impl DccBase {
         } else {
             self.take_heard(call);
             let line = match keep {
-                Some(place) => format!("K {place} {}", dcc::hex(&packet)),
+                Some(place) => {
+                    self.kept.borrow_mut().insert(place, packet.clone());
+                    format!("K {place} {}", dcc::hex(&packet))
+                }
                 None => format!("S {}", dcc::hex(&packet)),
             };
             self.with_link("dcc_base", |l| l.say(&line))?;
@@ -404,9 +434,14 @@ impl Object for DccBase {
                         // already, or its safety turns it off within 3 seconds.)
                         let reachable = self.lost.borrow().is_none() && self.link.borrow().is_some();
                         if on || reachable {
-                            self.with_link("a dcc_base's `power`", |l| l.say(if on { "+" } else { "-" }))?;
+                            self.with_link("a dcc_base's `power`", |l| {
+                                // (A reading said before the change is no longer the track's.)
+                                l.heard.lock().unwrap_or_else(|p| p.into_inner()).current = None;
+                                l.say(if on { "+" } else { "-" })
+                            })?;
                         }
                     }
+                    self.current.set(0);
                     self.power.set(on);
                     Ok(())
                 }
