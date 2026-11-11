@@ -1,7 +1,9 @@
 ` The decoder workshop: every setting of a locomotive's decoder by name, read and written as a whole
 ` (design/model_railroading.md, "Phase A, item 4"). Put the locomotive on the programming track (the
 ` motor shield's B screws), connect, press Identify (it picks the decoder's definition), then Read all.
-` Change any row, then Write changes. "On the main" writes to a locomotive on the main track instead,
+` Change any row, then Write changes. Save to roster keeps the decoder's settings under a name (the
+` roster every app shares); Load puts a saved locomotive's settings back, to Write all into a decoder.
+` "On the main" writes to a locomotive on the main track instead,
 ` by its address: it can only write. Gray rows aren't known yet, amber ones are changed and not
 ` written, yellow ones loaded and not written.
 
@@ -9,8 +11,9 @@ $base = null
 $definition = decoder_definition("nmra")
 $programmer = null
 $filling = false
+$roster = roster()
 
-$win = window(title: "Decoder workshop", width: 900, height: 740, minimum_width: 760, minimum_height: 560)
+$win = window(title: "Decoder workshop", width: 900, height: 784, minimum_width: 760, minimum_height: 600)
 
 ` -- the base station --
 $port_label = label(left: 20, top: 24, width: 110, text: "Base station:")
@@ -40,22 +43,36 @@ $win.add($on_main)
 $address = text_field(left: 790, top: 108, width: 90, text: "3", enabled: false, lock_right: true, tooltip: "The locomotive's address on the main")
 $win.add($address)
 
+` -- the roster --
+$roster_label = label(left: 20, top: 156, width: 110, text: "Roster:")
+$win.add($roster_label)
+$entries = popup_menu(left: 130, top: 152, width: 240)
+$win.add($entries)
+$load = button(left: 380, top: 150, width: 80, height: 34, text: "Load", enabled: false, _
+    tooltip: "Puts the chosen locomotive's saved settings in the list, to Write all into a decoder")
+$win.add($load)
+$entry_name = text_field(left: 524, top: 152, width: 200, hint: "A name, such as UP 792")
+$win.add($entry_name)
+$save = button(left: 734, top: 150, width: 146, height: 34, text: "Save to roster", enabled: false, lock_right: true, _
+    tooltip: "Keeps the decoder's settings, its definition, and its address under this name")
+$win.add($save)
+
 ` -- reading and writing --
-$read_all = button(left: 20, top: 152, width: 120, height: 34, text: "Read all", enabled: false)
+$read_all = button(left: 20, top: 196, width: 120, height: 34, text: "Read all", enabled: false)
 $win.add($read_all)
-$write_changes = button(left: 150, top: 152, width: 140, height: 34, text: "Write changes", enabled: false)
+$write_changes = button(left: 150, top: 196, width: 140, height: 34, text: "Write changes", enabled: false)
 $win.add($write_changes)
-$write_all = button(left: 300, top: 152, width: 120, height: 34, text: "Write all", enabled: false, _
+$write_all = button(left: 300, top: 196, width: 120, height: 34, text: "Write all", enabled: false, _
     tooltip: "Writes every setting (never the version, the maker, or the decoder lock)")
 $win.add($write_all)
-$cancel = button(left: 430, top: 152, width: 100, height: 34, text: "Cancel", enabled: false)
+$cancel = button(left: 430, top: 196, width: 100, height: 34, text: "Cancel", enabled: false)
 $win.add($cancel)
-$progress = progress_bar(left: 550, top: 162, width: 330, value: 0, maximum_value: 1, lock_right: true)
+$progress = progress_bar(left: 550, top: 206, width: 330, value: 0, maximum_value: 1, lock_right: true)
 $win.add($progress)
 
-$settings = property_list(left: 20, top: 200, width: 860, height: 500, lock_right: true, lock_bottom: true, name_width: 330)
+$settings = property_list(left: 20, top: 244, width: 860, height: 500, lock_right: true, lock_bottom: true, name_width: 330)
 $win.add($settings)
-$legend = label(left: 20, top: 708, width: 860, lock_right: true, lock_top: false, lock_bottom: true, _
+$legend = label(left: 20, top: 752, width: 860, lock_right: true, lock_top: false, lock_bottom: true, _
     text: "Gray: not known yet · Amber: changed, not written · Yellow: loaded, not written")
 $win.add($legend)
 
@@ -186,8 +203,10 @@ function make_programmer() {
 }
 
 function set_buttons() {
-    global $base, $programmer, $identify, $read_all, $write_changes, $write_all, $cancel, $on_main, $address, $definitions
+    global $base, $programmer, $identify, $read_all, $write_changes, $write_all, $cancel, $on_main, $address, $definitions, $load, $save, $entries
     $ready = $programmer != null and not $programmer.busy
+    $load.enabled = $ready and $entries.selected_row_tag != null
+    $save.enabled = $ready
     $identify.enabled = $ready and not $on_main.value
     $read_all.enabled = $ready and not $on_main.value
     $write_changes.enabled = $ready
@@ -276,6 +295,73 @@ $address.on_text_changed = function() {
     }
 }
 
+` -- the roster --
+
+function fill_roster() {
+    global $roster, $entries
+    $entries.remove_all_rows()
+    foreach $roster.names as $n {
+        $entries.add_row($n, tag: $n)
+    }
+}
+
+$entries.on_selection_changed = function() {
+    global $entries, $entry_name
+    if $entries.selected_row_tag != null {
+        $entry_name.text = $entries.selected_row_tag
+    }
+    set_buttons()
+}
+
+$save.on_click = function() {
+    global $roster, $programmer, $definition, $entry_name, $status, $entries
+    $name = trim($entry_name.text)
+    if $name == "" {
+        $status.text = "Give the locomotive a name to keep it under, such as UP 792."
+        return
+    }
+    $values = $programmer.values
+    $long = $values["Address used"] == "long"
+    $address = (if $long then $values["Long address"] else $values["Short address"]) ?? 3
+    try {
+        $entry = $roster.entry($name) ?? $roster.add($name)
+        $entry.address = $address
+        $entry.long = $long or $address > 127
+        $entry.decoder = $definition.name
+        $entry.cvs = $programmer.cvs
+        $roster.save()
+    } catch $e {
+        $status.text = $e.message
+        return
+    }
+    fill_roster()
+    $entries.select_row_with_tag($name)
+    $status.text = $name + " was saved in the roster, with " + count($programmer.cvs) + " settings."
+}
+
+$load.on_click = function() {
+    global $roster, $entries, $definition, $definitions, $programmer, $status
+    $entry = $roster.entry($entries.selected_row_tag)
+    if $entry == null {
+        return
+    }
+    ` (Its own definition first, when Leah has it: a new programmer and list.)
+    if $entry.decoder != "" and $entry.decoder != $definition.name {
+        try {
+            $definition = decoder_definition($entry.decoder)
+            $definitions.select_row_with_tag($entry.decoder)
+            make_programmer()
+            fill_list()
+        } catch $e {
+            $status.text = $e.message
+        }
+    }
+    $programmer.load_cvs($entry.cvs)
+    show_values()
+    $status.text = $entry.name + "'s settings are loaded (yellow): Write all puts them in the decoder."
+    set_buttons()
+}
+
 ` -- connecting --
 
 $connect.on_click = function() {
@@ -345,4 +431,5 @@ foreach $ports as $i: $p {
 $status.text = if count($ports) == 0 then "No board is plugged in: plug the Mega into USB, then start this app again." _
     else "Connect to the base station."
 fill_list()
+fill_roster()
 $win.show()

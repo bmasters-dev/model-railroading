@@ -26,8 +26,11 @@ locomotive 3: stop, forward
 
 **locomotive**(address, long: false, base: null) · locomotive
 
+**locomotive**(entry, base: null) · locomotive
+
 | Part | Description |
 |---|---|
+| entry | A [roster_entry](ref:roster_entry) in place of the address: the locomotive at its address, long or short as the entry says (so no `long:`, which is then a `type_error`). |
 | address | Required. The decoder's address: 1 to 127 for a short address; 128 to 10239 with `long: true` for a long one. 0 or anything past 10239 is a `range_error`, and so is a long address without `long: true`: `locomotive(): 200 is a long address: give long: true (a short address is 1 to 127)`. |
 | long | Optional. `true` sends the address in its long, two-byte form, for 1 to 127 too: a decoder answers to one or the other, so `locomotive(3)` and `locomotive(3, long: true)` are two different locomotives. |
 | base | Optional. The [dcc_base](ref:dcc_base) it runs on; by default the one made last. With none made, it is a `hardware_error`: `locomotive(): there is no base station: make one first, dcc_base("/dev/ttyACM0") or dcc_base(simulate: true)`. |
@@ -206,4 +209,4 @@ Output:
 
 ## See also
 
-[dcc_base](ref:dcc_base), [Model railroading](ref:Model railroading)
+[roster](ref:roster), [roster_entry](ref:roster_entry), [dcc_base](ref:dcc_base), [Model railroading](ref:Model railroading)

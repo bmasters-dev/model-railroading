@@ -58,6 +58,25 @@ $icons["decoder_programmer"] = function() {
     ic.fill(13, 3, 1.5, 9, ic.accent)
     ic.shape([[11.75, 11.5], [15.75, 11.5], [13.75, 15]], ic.accent)
 }
+` A roster entry: a card with a locomotive on it and two lines of its record.
+$icons["roster_entry"] = function() {
+    ic.rbox(0.5, 2.5, 15, 11, ic.face, ic.edge, 1)
+    ic.rfill(2.5, 6, 5, 3, ic.accent, 0.5)
+    ic.rfill(6.5, 4.5, 2.5, 4.5, ic.accent_dark, 0.5)
+    ic.fill(2.5, 10, 6.5, 1, ic.ink)
+    ic.fill(10.5, 5, 3.5, 1.5, ic.mid)
+    ic.fill(10.5, 8, 3.5, 1.5, ic.mid)
+}
+` A roster: a stack of cards, the front one with a locomotive.
+$icons["roster"] = function() {
+    ic.rbox(3.5, 0.5, 12, 9, ic.soft, ic.edge, 1)
+    ic.rbox(2, 2.5, 12, 9, ic.soft, ic.edge, 1)
+    ic.rbox(0.5, 4.5, 12, 11, ic.face, ic.edge, 1)
+    ic.rfill(2.5, 8.5, 4.5, 3, ic.accent, 0.5)
+    ic.rfill(6, 7, 2.5, 4.5, ic.accent_dark, 0.5)
+    ic.fill(2.5, 12.5, 6, 1, ic.ink)
+    ic.fill(9.5, 8.5, 1.5, 1.5, ic.mid)
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)

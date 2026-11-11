@@ -1043,7 +1043,17 @@ pub fn new_locomotive(call: &mut Call) -> Result<Value, Error> {
             None => return Err(Error::type_error(format!("locomotive()'s `base:` is a dcc_base, not {}", describe(v))).at(call.option_line("base"))),
         },
     };
-    let address = address_of("locomotive", call.arg(0), long)?;
+    // (A roster entry: its address, and whether it is long.)
+    let (address, long) = match call.own::<crate::roster::RosterEntry>(0) {
+        Some(entry) => {
+            if call.option("long").is_some() {
+                return Err(Error::type_error("locomotive(): a roster entry says whether its address is long: no `long:`").at(call.option_line("long")));
+            }
+            let e = entry.data()?;
+            (e.address, e.long)
+        }
+        None => (address_of("locomotive", call.arg(0), long)?, long),
+    };
     let base = match base.or_else(|| LAST.with(|l| l.borrow().upgrade())) {
         Some(b) => b,
         None => return Err(hardware("locomotive(): there is no base station: make one first, dcc_base(\"/dev/ttyACM0\") or dcc_base(simulate: true)")),

@@ -8,7 +8,7 @@ version = "0.1.0-alpha.48"
 
 [[package]]
 name = "leah-addon-model-railroading"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "leah-addon-kit",
  "libc",

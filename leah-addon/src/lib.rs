@@ -13,6 +13,7 @@ mod dcc;
 mod definitions;
 mod makers;
 mod programmer;
+mod roster;
 
 use leah_addon_kit::{Function, Needs, Value};
 
@@ -24,7 +25,7 @@ fn needs(name: &str, options: &[(String, Value, i64)]) -> Vec<Needs> {
         "dcc_base" if options.iter().any(|(n, v, _)| n == "simulate" && *v == Value::Bool(true)) => vec![],
         "dcc_base" | "dcc_ports" => vec![Needs::Device],
         "load_dcc_program" => vec![Needs::Programs, Needs::Device],
-        "read_decoder_definition_file" => vec![Needs::Files],
+        "read_decoder_definition_file" | "roster" => vec![Needs::Files],
         _ => vec![],
     }
 }
@@ -51,6 +52,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("decoder_definition_for", &[], definitions::definition_for as Function),
             ("read_decoder_definition_file", &[Needs::Files], definitions::read_definition_file as Function),
             ("decoder_programmer", &[], programmer::new_programmer as Function),
+            ("roster", &[Needs::Files], roster::new_roster as Function),
         ],
         needs: Some(needs),
         objects: vec![
@@ -58,6 +60,8 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("locomotive", &["address", "long", "base", "speed", "direction"], &["set_function", "function", "stop", "emergency_stop", "write_cv", "write_cv_bit"], &[]),
             ("decoder_definition", &["name", "maker", "versions", "settings", "groups", "cvs"], &["setting", "value_of", "cvs_of", "is_shown"], &[]),
             ("decoder_programmer", &["definition", "main_track", "values", "states", "cvs", "busy", "problems"], &["value", "set_value", "state", "read_all", "read", "write_changes", "write_all", "load_cvs", "cancel"], &["on_progress", "on_done"]),
+            ("roster", &["path", "names", "count", "groups", "changed"], &["add", "entry", "entries", "remove", "save", "export_entries", "import_entries"], &[]),
+            ("roster_entry", &["name", "road_name", "road_number", "address", "long", "decoder", "model", "notes", "picture", "groups", "cvs", "functions", "speed_limit", "attributes"], &["set_function", "attribute", "set_attribute"], &[]),
             ("dcc_program_job", &["port", "role", "board", "finished", "succeeded", "message"], &["wait"], &["on_finished"]),
         ],
         controls: vec![],

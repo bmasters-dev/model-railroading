@@ -1554,6 +1554,13 @@ fn the_decoder_workshop_identifies_a_decoder_and_reads_it() {
     let Some(printed) = run_example_on_screen("workshop-read", "decoder_workshop.leah", &boards, driver, 25000) else { return };
     drop(boards);
     assert!(printed.contains("Read.\n[5, 12, \"short\", true, false]"), "{printed}");
+
+    // Saved to the roster, then loaded back: the loaded settings yellow, waiting for Write all.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", &cvs.join(",")]) else { return };
+    let driver = "call_later(300, function() {\n    global $connect\n    $connect.click()\n    call_later(3500, function() {\n        global $read_all\n        $read_all.click()\n        call_later(14000, function() {\n            global $entry_name, $save, $status, $roster, $load, $programmer\n            $entry_name.text = \"Test switcher\"\n            $save.click()\n            print($status.text)\n            $e = $roster.entry(\"Test switcher\")\n            print([$e.address, $e.long, $e.decoder, $e.cvs[3]])\n            $load.click()\n            print([$programmer.state(\"Acceleration\"), $programmer.value(\"Acceleration\")])\n            quit()\n        })\n    })\n})\n";
+    let Some(printed) = run_example_on_screen("workshop-roster", "decoder_workshop.leah", &boards, driver, 25000) else { return };
+    drop(boards);
+    assert!(printed.contains("Test switcher was saved in the roster, with 52 settings.\n[5, false, \"nmra\", 12]\n[\"loaded\", 12]"), "{printed}");
 }
 
 #[test]
@@ -1579,4 +1586,100 @@ $p.write_changes()
     drop(boards);
     assert!(out.success, "{}", out.stderr);
     assert_eq!(out.stdout, "[\"write_changes\", null, true]\n");
+}
+
+#[test]
+fn a_roster_keeps_each_locomotive_and_drives_one() {
+    // The roster: entries made, changed, saved to their JSON file and read back; function labels and
+    // the owner's own fields; a programmer's CVs kept in an entry and loaded back; groups and
+    // addresses found; exported and imported (a name taken gets a number); locomotive($entry).
+    let dir = std::env::temp_dir().join(format!("model-railroading-roster-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("roster.json");
+    let export = dir.join("export.json");
+    let script = format!(
+        r#"$r = roster("{file}")
+print([$r.count, $r.changed])
+$up = $r.add("UP 792", road_name: "Union Pacific", road_number: "792", address: 792, decoder: "soundtraxx_tsunami2_diesel", groups: ["Diesel", "Union Pacific"])
+$up.set_function(0, "Headlight")
+$up.set_function(2, "Horn", momentary: true)
+$up.set_attribute("Era", "1950s")
+$up.speed_limit = 100
+$sw = $r.add("Switcher", address: 3, groups: ["Diesel"])
+$base = dcc_base(simulate: true)
+$base.power = true
+$p = decoder_programmer(decoder_definition("nmra"), locomotive($sw))
+$p.set_value("Acceleration", 9)
+$p.set_value("Deceleration", 4)
+$sw.cvs = $p.cvs
+print([$up.long, $up.functions[2], $up.attribute("era"), $sw.cvs, $r.changed])
+$r.save()
+$again = roster("{file}")
+$u = $again.entry("up 792")
+print([$again.names, $u.road_name, $u.address, $u.long, $u.functions[0]["label"], $u.speed_limit, $u.attributes, $u.groups])
+print([count($again.entries(group: "diesel")), $again.entries(address: 3)[0].name, $again.groups, $again.entry("Big Boy")])
+$q = decoder_programmer(decoder_definition("nmra"), $base)
+$q.load_cvs($again.entry("Switcher").cvs)
+print([$q.value("Acceleration"), $q.state("Acceleration")])
+print($again.export_entries("{export}", names: ["Switcher"]))
+print([$again.import_entries("{export}"), $again.count])
+$again.remove("Switcher (2)")
+$loco = locomotive($u)
+$loco.speed = 40
+print([$base.decoder(792, long: true)["speed"], $loco.long])
+foreach [_
+    function() {{ $again.add("UP 792") }}, _
+    function() {{ $u.address = 0 }}, _
+    function() {{ $u.long = false }}, _
+    function() {{ $u.speed_limit = 127 }}, _
+    function() {{ $u.set_function(70, "x") }}, _
+    function() {{ $u.name = "switcher" }}, _
+    function() {{ $again.remove("Big Boy") }}, _
+    function() {{ locomotive($u, long: false) }}] as $f {{
+    try {{
+        $f()
+    }} catch $e {{
+        print($e.type + ": " + $e.message)
+    }}
+}}
+"#,
+        file = file.display(),
+        export = export.display()
+    );
+    let out = run("roster", &script);
+    let saved = std::fs::read_to_string(&file).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out.success, "{}", out.stderr);
+    assert!(saved.contains("\"road_name\": \"Union Pacific\""), "{saved}");
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "[0, false]",
+            "[true, [\"label\": \"Horn\", \"momentary\": true], \"1950s\", [3: 9, 4: 4], true]",
+            "[[\"UP 792\", \"Switcher\"], \"Union Pacific\", 792, true, \"Headlight\", 100, [\"Era\": \"1950s\"], [\"Diesel\", \"Union Pacific\"]]",
+            "[2, \"Switcher\", [\"Diesel\", \"Union Pacific\"], null]",
+            "[9, \"loaded\"]",
+            "1",
+            "[[\"Switcher (2)\"], 3]",
+            "[40, true]",
+            "range_error: roster.add(): the roster has an entry named \"UP 792\" already",
+            "range_error: a roster_entry's `address` is 1 to 10239, not 0",
+            "range_error: a roster_entry: 792 is a long address, so `long` is true",
+            "range_error: a roster_entry's `speed_limit` is a speed step, 1 to 126, not 127",
+            "range_error: roster_entry.set_function(): a function is 0 to 68 (F0 the lights), not 70",
+            "range_error: the roster has an entry named \"switcher\" already",
+            "range_error: roster.remove(): the roster has no entry named \"Big Boy\"",
+            "type_error: locomotive(): a roster entry says whether its address is long: no `long:`",
+        ]
+    );
+}
+
+#[test]
+fn a_roster_without_a_path_is_shared_by_every_app() {
+    // Beside the scripts' own data folders (in the app's folder, as Leah keeps every app's data):
+    // data/model_railroading/roster.json, its folder made on saving.
+    let out = run("roster-default", "$r = roster()\n$r.add(\"Switcher\")\n$r.save()\nprint([file_name($r.path), file_name(file_path($r.path)), file_name(file_path($r.path, levels: 2)), file_exists($r.path)])\nprint(file_name(file_path(data_path())) == file_name(file_path($r.path, levels: 2)))\n");
+    assert!(out.success, "{}", out.stderr);
+    assert_eq!(out.stdout, "[\"roster.json\", \"model_railroading\", \"data\", true]\ntrue\n");
 }

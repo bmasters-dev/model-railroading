@@ -402,6 +402,22 @@ The **decoder workshop** sample (`examples/decoder_workshop.leah`): a `property_
 definition group, rows by kind, rows painted by state, speed-table rows hidden by `is_shown`, Identify
 picking the definition, Read all, Write changes, Write all, Cancel, a progress bar, and On the main.
 
+## Phase A, item 5: the roster (built 2026-11-11, model-railroading#9)
+
+`roster(path)`: entries kept in one JSON file (`{"format": 1, "entries": [...]}`), read when made,
+written only by `save()` (Leah's safe write, the folder made). Without a path, the roster every app
+shares: `model_railroading/roster.json` beside the apps' own data folders (the parent of
+`data_path()`, so in the app's folder or the portable folder, as Leah keeps every app's data).
+`roster_entry`: name (unique, case-blind), road_name, road_number, address (128+ makes long), long,
+decoder (a definition's name), model, notes, picture (a path), groups, cvs, functions (F0 to F68:
+label and momentary, set with `set_function`), speed_limit (1 to 126, used by item 6), attributes
+(the owner's fields). `entries(group:, address:)`, `export_entries(path, names:)`,
+`import_entries(path)` (a taken name gets " (2)"), `remove`. `locomotive($entry)`. The programmer's
+`cvs` go into an entry and back through `load_cvs`. Not built (later, as people ask): a speed profile
+and physics data per entry, the roster on the web, exporting to a command station's format, CSV of
+the CVs. The decoder workshop got a Roster row: Save to roster (the decoder's CVs, definition, and
+address under a name) and Load (a saved locomotive's settings back, loaded, to Write all).
+
 ## Decided: no BiDiB (the owner, 2026-11-11)
 
 BiDiB's specification is free but supervised: the working group must be told before anything is

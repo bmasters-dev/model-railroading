@@ -67,3 +67,24 @@ Output:
 [29: 4]
 nmra
 ```
+
+## A roster
+
+Each locomotive's record, kept in a file; a locomotive made from its entry.
+
+```leah
+$r = roster(join_path(make_temp_path(), "roster.json"))
+$up = $r.add("UP 792", road_name: "Union Pacific", address: 792, groups: ["Diesel"])
+$up.set_function(2, "Horn", momentary: true)
+$r.save()
+$base = dcc_base(simulate: true)
+$base.power = true
+$loco = locomotive($r.entry("up 792"))
+$loco.speed = 30
+print([$r.names, $loco.address, $loco.long, $base.decoder(792, long: true)["speed"]])
+```
+
+Output:
+```
+[["UP 792"], 792, true, 30]
+```
