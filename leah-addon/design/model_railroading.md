@@ -117,14 +117,25 @@ Step 2 of the safe ladder. Decided by Claude (the owner can overrule):
 
 - **The Mega makes the signal** on **pin 12** (Timer1's output OC1B, so the pulses come from the
   hardware timer, not from code), with **no shield** on it. The motor shield stays in its bag until step 3.
-- **A classic Uno or a Nano reads it back** on **pin D2** (INT0, an interrupt on every edge), measures
-  each half-bit, decodes the packets, and sends them to Leah over USB. Not the Uno R4 WiFi: its chip is
+- **A classic Uno or a Nano reads it back** on **pin D8** (Timer1's input capture, ICP1: each edge's
+  time taken in hardware, to 0.5 us; pin D2's interrupt was tried first and was off by up to 6 us
+  whenever the Uno was busy sending), measures each half-bit, decodes the packets, and sends them to Leah over USB. Not the Uno R4 WiFi: its chip is
   different, and the classic ATmega328P board is the one the reader is written for.
-- **Two wires**: Mega pin 12 → a **1 kΩ resistor** → the reader's D2 (the resistor keeps either board safe
+- **Two wires**: Mega pin 12 → a **1 kΩ resistor** → the reader's D8 (the resistor keeps either board safe
   if a pin is set wrong), and Mega GND → the reader's GND. Both boards 5 V, so no level shifting.
 - **Both boards on USB** to the PC, which powers them; no other supply connected.
 - The owner's account needs the `dialout` group to open the ports (`sudo usermod -aG dialout $USER`, then
   log out and in).
+- **The board programs** are `boards/dcc_base/dcc_base.ino` (the Mega: a line `P 03 3F A9` sets the
+  packet repeated between idle packets, the error byte added; `I` idle only) and
+  `boards/dcc_reader/dcc_reader.ino` (the Uno: `P ...` for each packet heard, at most every 2 s, and a
+  `T` line each second with the halves' shortest and longest, the packets, the halves outside S-9.1's
+  limits, and the error-byte failures).
+- **Measured on the owner's bench, 2026-11-10** (a genuine Mega 2560, a CH340 Uno clone): halves of a 1
+  57.5 to 58.0 us, of a 0 99.5 to 100.0 us (S-9.1 allows a command station 55 to 61 and at least 95);
+  about 172 packets a second; no error-byte failures; short (3) and long (231) addresses, speed and stop
+  packets read back exactly. The signal half of step 2 passes; Leah's side (`dcc_base()` with a port)
+  is next.
 - **`arduino-cli` is a prerequisite** (installed 2026-11-10 for development in `~/Leah_Tools`, version
   1.5.1, with the `arduino:avr` core; a wrapper sets its folders so nothing goes into `~/.arduino15`).
   It isn't a Debian package, so it can't go in addon.toml's `needs` (Debian packages only): the
