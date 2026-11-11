@@ -7,12 +7,12 @@ layout.
 
 | Folder | What it holds |
 |---|---|
-| [leah-addon/](leah-addon/) | The model railroading addon for Leah: `dcc_base()` and `locomotive()`. A 3rd-party addon, built with Leah's addon kit. |
+| [leah-addon/](leah-addon/) | The model railroading addon for Leah: the base station, locomotives, decoders and their settings, the roster, consists. A 3rd-party addon, built with Leah's addon kit. Its documentation is [the wiki](https://github.com/bmasters-dev/model-railroading/wiki). |
 
 ## What you need
 
 - **For the simulator** (`dcc_base(simulate: true)`): only Leah and this addon.
-- **For a real base station board** (being built: the safe ladder's step 2):
+- **For a real base station board:**
   - **`arduino-cli`** (1.5 or newer), Arduino's command-line tool, which compiles Leah's board
     programs and loads them onto the boards. It isn't in Debian: get it from
     [its releases](https://github.com/arduino/arduino-cli/releases), then add the boards' support once

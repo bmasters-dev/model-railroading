@@ -471,6 +471,20 @@ never as "Leah's WiThrottle"; its object gets a name of Leah's own (`phone_throt
 settled when it is designed). The protocol is implemented from facts in the descriptions that exist,
 never from another program's code.
 
+## Decided: the addon's own documentation (Claude, 2026-11-11, at the owner's word)
+
+A 3rd-party addon keeps its documentation apart from Leah's reference (the owner: "We have to keep a
+separate documentation for Model Railroading since it's considered a 3rd party addon"). Its pages
+stay in `docs/`, in the reference's style (Leah's STYLE.md), written with each item as it is built
+rather than saved for a session; `tools/docs.py check` runs every sample with Leah and the addon as
+built, and checks every link and anchor; `tools/docs.py wiki` publishes the committed pages to this
+repository's wiki, with a Home page (the overview, the function pages, the objects), a header, and
+a sidebar. A `ref:` link to a title that isn't one of these pages goes to Leah's own wiki, so the
+pages can point at Leah's reference without copying it. Publishing goes one way, as Leah's does: an
+edit made on the website stops it until brought into `docs/`. A documentation run is: `cargo
+build`, `tools/docs.py check`, commit, `tools/docs.py wiki`, at each release that changed a page.
+Leah's kit has no such tool yet, nor help in the IDE for a 3rd-party addon's names: filed in Leah.
+
 ## Rules to keep (agreed in principle)
 
 - **Emergency stop** always works, from code and from every throttle control.
