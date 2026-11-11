@@ -790,3 +790,46 @@ try {{
     assert_eq!(lines[2], "[\"address\", [\"address\": 1, \"long\": false], null]");
     assert!(lines[3].starts_with("[8, null, \"no decoder answered on the programming track"), "{}", read.stdout);
 }
+
+#[test]
+fn the_dcc_throttle_example_reads_the_address_on_the_programming_track() {
+    let gui = std::env::var_os("LEAH_GUI").map(PathBuf::from).unwrap_or_else(|| home().join("Leah_Dev/target/all_addons/debug/leah"));
+    let screen = home().join("Leah_Dev/tools/wayland_test_screen.sh");
+    if !gui.is_file() || !screen.is_file() {
+        eprintln!("skipped: no Leah with windows ({}) or no hidden test screen", gui.display());
+        return;
+    }
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=5,29=6"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let dir = addons_folder("throttle-read");
+    let list = dir.join("ports.txt");
+    std::fs::write(&list, format!("{}\t2341\t0042\t\n", boards.base)).unwrap();
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/dcc_throttle.leah");
+    let file = dir.join("script.leah");
+    std::fs::write(
+        &file,
+        format!(
+            "include \"{}\"\ncall_later(300, function() {{\n    global $connect\n    $connect.click()\n    call_later(3500, function() {{\n        global $read\n        $read.click()\n        call_later(2500, function() {{\n            global $status, $address, $long\n            print($address.text)\n            print($long.value)\n            print($status.text)\n            quit()\n        }})\n    }})\n}})\n",
+            example.display()
+        ),
+    )
+    .unwrap();
+    let out = Command::new("sh")
+        .arg(&screen)
+        .arg("--gui")
+        .arg(&gui)
+        .arg(&file)
+        .env("LEAH_3RD_PARTY_ADDONS", &dir)
+        .env("LEAH_USER_ADDONS", "")
+        .env("LEAH_TEST_DCC_PORTS", &list)
+        .env("LEAH_TEST_INTERACT", "")
+        .env("LEAH_QUIT_AFTER_MS", "12000")
+        .output()
+        .expect("the hidden screen runs");
+    drop(boards);
+    let _ = std::fs::remove_dir_all(&dir);
+    let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(printed.contains("5\nfalse\nThe locomotive on the programming track answers to address 5."), "{printed}");
+}

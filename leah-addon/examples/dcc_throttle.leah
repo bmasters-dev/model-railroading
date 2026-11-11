@@ -1,8 +1,9 @@
 ` A DCC throttle on Leah's own base station: an Arduino Mega running Leah's base station program with
 ` an EX-MotorShield8874 on it, a 12 V supply in the shield's jack, and the track (or a treadmill) on
-` the shield's A screws (design/model_railroading.md). Choose the locomotive's address, connect, turn
-` the track power on, and drive: the speed, the direction, Stop (eased by the decoder), Emergency stop
-` (at once; also the Escape key), and the functions F0 to F12.
+` the shield's A screws (design/model_railroading.md). Choose the locomotive's address, or read it
+` with the locomotive on the programming track (the B screws), connect, turn the track power on, and
+` drive: the speed, the direction, Stop (eased by the decoder), Emergency stop (at once; also the
+` Escape key), and the functions F0 to F12.
 
 $base = null
 $loco = null
@@ -31,7 +32,10 @@ $address_arrows = up_down_arrows(left: 162, top: 114, minimum_value: 1, maximum_
 $win.add($address_arrows)
 $long = checkbox(left: 200, top: 116, text: "Long address")
 $win.add($long)
-$current = label(left: 420, top: 118, width: 340, lock_right: true, text: "")
+$read = button(left: 330, top: 110, width: 160, height: 34, text: "Read address", enabled: false, _
+    tooltip: "Reads the address of the locomotive on the programming track (the shield's B screws)")
+$win.add($read)
+$current = label(left: 510, top: 118, width: 270, lock_right: true, text: "")
 $win.add($current)
 
 ` -- driving --
@@ -99,8 +103,8 @@ function look_for_boards() {
 }
 
 function set_driving_enabled($on) {
-    global $power, $throttle, $direction, $stop, $emergency, $function_buttons
-    foreach [$power, $throttle, $direction, $stop, $emergency] as $c {
+    global $power, $throttle, $direction, $stop, $emergency, $function_buttons, $read
+    foreach [$power, $throttle, $direction, $stop, $emergency, $read] as $c {
         $c.enabled = $on
     }
     foreach $function_buttons as $b {
@@ -163,6 +167,20 @@ $connect.on_click = function() {
             $base = null
             return
         }
+        $base.on_read = function($what, $value, $error) {
+            global $address, $long, $read, $status, $power
+            $read.enabled = true
+            $power.value = false
+            if $error != null {
+                $status.text = "Couldn't read the address: " + $error
+                return
+            }
+            $long.value = $value["long"]
+            $address.text = to_text($value["address"])
+            take_locomotive()
+            $status.text = "The locomotive on the programming track answers to address " + $value["address"] _
+                + (if $value["long"] then " (long)" else "") + ". Move it to the main track (A) to drive it."
+        }
         take_locomotive()
         set_driving_enabled(true)
         $connect.text = "Disconnect"
@@ -170,6 +188,19 @@ $connect.on_click = function() {
             $status.text = "Connected, but the Mega has no motor shield: the signal stays on pin 12, not the track."
         }
     })
+}
+
+` Reads the address of the locomotive on the programming track, in the background (a few seconds,
+` more when its wheels need another try); the main track's power is off meanwhile.
+$read.on_click = function() {
+    global $base, $read, $status, $throttle
+    if $base == null {
+        return
+    }
+    $throttle.value = 0
+    $read.enabled = false
+    $status.text = "Reading the address on the programming track (the B screws): the main track's power is off meanwhile..."
+    $base.read_address(in_background: true)
 }
 
 $power.on_value_changed = function() {

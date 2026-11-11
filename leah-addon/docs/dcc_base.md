@@ -73,8 +73,16 @@ $base.power = true
 |---|---|---|
 | [clear_packets](#clear_packets) | | |
 | [close](#close) | | |
+| [read_address](#read_address) | in_background: boolean | array |
+| [read_cv](#read_cv) | cv as number, in_background: boolean | number |
 | [decoder](#decoder) | address as number, long: boolean | array |
 | [emergency_stop](#emergency_stop) | | |
+
+## Events
+
+| Name | Parameters |
+|---|---|
+| [on_read](#on_read) | what, value, error |
 
 ## Property descriptions
 
@@ -241,6 +249,41 @@ Output:
 
 ---
 
+### read_address
+
+**read_address**(in_background: false) · array
+
+Reads the address of the locomotive on the **programming track** (the motor shield's **B** screws), as an array: `address`, and `long` (`true` when the decoder answers to its long address). It reads the decoder's settings CV 29 (whose bit 5 says which address it answers to), then CV 1 (the short address) or CV 17 and 18 (the long one), as [read_cv](#read_cv) does, so it takes a few seconds, longer when a setting needs another try.
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+$a = $base.read_address()
+print("the locomotive answers to " + $a["address"] + (if $a["long"] then " (long)" else ""))
+```
+
+With `in_background: true` it gives back `null` at once and reads in the background: [on_read](#on_read) gets the answer (its `what` is `"address"`). In a window's code, use that: waiting would freeze the window.
+
+---
+
+### read_cv
+
+**read_cv**(cv, in_background: false) · number
+
+Reads a decoder setting (a CV, 1 to 1024) of the locomotive on the **programming track**, the motor shield's **B** screws, and gives back its value, 0 to 255. Only a base station board with its motor shield can read: on a simulated one, or without the shield, it is a `hardware_error`. A number outside 1 to 1024 is a `range_error`.
+
+Reading uses the NMRA's service mode: the base station turns the **main track's power off** (A), powers the programming track, gives the decoder a moment to start (up to 1 A for its first second and a half, as a sound decoder's capacitors need), then asks it eight yes-or-no questions, one per bit, and checks the whole byte at the end. The decoder says "yes" by pulsing its motor for a few milliseconds, which the shield sees as a rise in current: so a decoder needs its motor connected, and clean wheels. A setting no decoder answered is asked again, three times in all, then it is a `hardware_error` saying what the base station saw: `no decoder answered on the programming track (the shield's B screws) (baseline 0 mA, highest 0 mA): is a locomotive on it, with clean wheels?`. After it, the main track's [power](#power) is off: turn it on again to drive. One reading at a time: a second one while one is going on is a `hardware_error`.
+
+Some useful settings: CV 1 the short address, CV 7 the decoder's version, CV 8 its maker (141 is SoundTraxx, 151 ESU, 153 TCS, 129 Digitrax, 11 NCE), CV 29 its configuration, CV 17 and 18 its long address.
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+print("the decoder's maker: " + $base.read_cv(8))
+```
+
+With `in_background: true` it gives back `null` at once, and [on_read](#on_read) gets the answer (its `what` is the CV's number).
+
+---
+
 ### emergency_stop
 
 **emergency_stop**()
@@ -264,6 +307,26 @@ Output:
 ```
 [0, 0, 0, 0]
 00 41 41
+```
+
+## Event descriptions
+
+### on_read
+
+**on_read**(what, value, error)
+
+A reading started with `in_background: true` is done. `what` is the CV's number ([read_cv](#read_cv)) or `"address"` ([read_address](#read_address)); `value` is what was read (a number, or the address's array), or `null` when it failed, and then `error` says why in words (`null` otherwise). The main track's power is off after a reading. A script without windows waits for it.
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+$base.on_read = function($what, $value, $error) {
+    if $error == null {
+        print("address " + $value["address"])
+    } else {
+        print("couldn't read: " + $error)
+    }
+}
+$base.read_address(in_background: true)
 ```
 
 ## See also

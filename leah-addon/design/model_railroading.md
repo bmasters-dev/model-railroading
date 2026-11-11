@@ -278,6 +278,33 @@ limit at 1 A:
 - **Not yet:** reading or writing a decoder's settings (the programming track, a later stage), so
   Leah can't yet read an address; the expensive locomotive goes the same way when the owner chooses.
 
+## Stage 2: the programming track, reading (2026-11-11, decided and built on the owner's bench)
+
+The stage list's "3. The programming track", its reading half. Decided by Claude (the owner can
+overrule): the shield's **channel B** is the programming track, as on DCC-EX (pin 11 its output,
+pin 13 its direction, which is Timer1's OC1C: the same timer gives B the same bit timing, its middle
+set with OCR1C beside OCR1B; pin 8 its brake, held low; A1 its current; A5 its fault line). Reading
+turns the main track off (both channels share the one timer's bit timing, so B gets its own packets
+only while A is off): simpler and safe. NMRA S-9.2.3's direct mode, verify bit then verify byte, as
+`R <cv>` on the board, which answers `CV <cv> <value>`, `CV <cv> none (baseline .. mA, highest .. mA)`,
+or `CV <cv> off <why>`; B's filler is the reset packet, never the idle one. Learned on the bench:
+
+- **A sound decoder draws about 800 mA as it starts** (SoundTraxx, a stay-alive): 1 A is allowed for
+  B's first 1.5 s, and the questions start after 260 resets (about 1.6 s).
+- **Its "yes" is its motor at stall for about 6 ms, near 800 mA:** the 250 mA limit must be over for
+  about 50 ms before it cuts (a short is still cut in about 2 ms by B's fault line); with 5 ms every
+  reading was cut at the first "yes".
+- **An answer is 2 ms all told over the baseline + 60 mA**, not one unbroken run (a flickering wheel
+  breaks a run); the byte verified at the end guards against a false "yes"; Leah tries a setting 3
+  times. The owner's locomotive read reliably once its wheels touched the rollers firmly: address 1,
+  CV 29 = 6, CV 8 = 141 (SoundTraxx).
+- `B <seconds>` powers B with resets and says its current four times a second: for checking on the
+  bench (it found the decoder drawing nothing in service mode, which pointed at the answer pulses).
+- **In Leah:** `read_cv($cv)` and `read_address()` on a `dcc_base`, each `in_background: true` with the
+  answer through `on_read($what, $value, $error)` (a window can't wait seconds); one reading at a
+  time; the main track's `power` false after. The throttle's **Read address** button uses it.
+  Writing CVs (and operations-mode programming on the main) is next.
+
 ## Rules to keep (agreed in principle)
 
 - **Emergency stop** always works, from code and from every throttle control.
