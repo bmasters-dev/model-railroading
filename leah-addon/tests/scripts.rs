@@ -654,3 +654,56 @@ fn after_a_cut_off_the_power_waits_and_a_restarted_board_gets_its_table_again() 
     let lines: Vec<&str> = said.lines().filter(|l| *l != "." && *l != "?").collect();
     assert_eq!(lines, ["X", "L 1500", "L 250", "K 0 03 3F 9F A3", "+", "L 250", "K 0 03 3F 9F A3", "D 0", "D 1", "X"], "{said}");
 }
+
+#[test]
+fn the_dcc_throttle_example_drives_a_locomotive() {
+    // The throttle on Leah's hidden test screen, with the stand-in boards (a shield, 40 mA): connected,
+    // the power on, speed 30, the horn, and the emergency stop; what the base station was sent.
+    let gui = std::env::var_os("LEAH_GUI").map(PathBuf::from).unwrap_or_else(|| home().join("Leah_Dev/target/all_addons/debug/leah"));
+    let screen = home().join("Leah_Dev/tools/wayland_test_screen.sh");
+    if !gui.is_file() || !screen.is_file() {
+        eprintln!("skipped: no Leah with windows ({}) or no hidden test screen", gui.display());
+        return;
+    }
+    let log = std::env::temp_dir().join(format!("model-railroading-throttle-log-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let Some(boards) = fake_boards(&["--shield", "--current", "40", "--log", log.to_str().unwrap()]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let dir = addons_folder("throttle");
+    let list = dir.join("ports.txt");
+    std::fs::write(&list, format!("{}\t2341\t0042\t\n", boards.base)).unwrap();
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/dcc_throttle.leah");
+    let file = dir.join("script.leah");
+    std::fs::write(
+        &file,
+        format!(
+            "include \"{}\"\ncall_later(300, function() {{\n    global $connect\n    $connect.click()\n    call_later(3500, function() {{\n        global $power, $throttle, $function_buttons\n        $power.value = true\n        $throttle.value = 30\n        $function_buttons[2].click()\n        call_later(1200, function() {{\n            global $status, $current, $speed_label\n            print($status.text)\n            print($current.text)\n            print($speed_label.text)\n            emergency_stop()\n            call_later(600, function() {{\n                quit()\n            }})\n        }})\n    }})\n}})\n",
+            example.display()
+        ),
+    )
+    .unwrap();
+    let out = Command::new("sh")
+        .arg(&screen)
+        .arg("--gui")
+        .arg(&gui)
+        .arg(&file)
+        .env("LEAH_3RD_PARTY_ADDONS", &dir)
+        .env("LEAH_USER_ADDONS", "")
+        .env("LEAH_TEST_DCC_PORTS", &list)
+        .env("LEAH_TEST_INTERACT", "")
+        .env("LEAH_QUIT_AFTER_MS", "12000")
+        .output()
+        .expect("the hidden screen runs");
+    drop(boards);
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_dir_all(&dir);
+    let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(printed.contains("Driving locomotive 1.\nTrack current: 40 mA\nSpeed 30 of 126\n"), "{printed}");
+    let lines: Vec<&str> = said.lines().filter(|l| *l != "." && *l != "?" && !l.starts_with("L ")).collect();
+    // (Forward and speed 0 on connecting; then the horn (a button's click() runs at once, the switch's
+    // and the slider's change events a moment later), the power, speed 30; the emergency stop.)
+    assert_eq!(lines, ["X", "K 0 01 3F 80 BE", "K 0 01 3F 80 BE", "K 1 01 82 83", "+", "K 0 01 3F 9F A1", "S 00 41 41", "K 0 01 3F 81 BF", "D 0", "D 1", "X"], "{said}");
+}

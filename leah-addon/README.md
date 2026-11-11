@@ -10,7 +10,9 @@ signal by simulated decoders, so a script can be tried with no board and no powe
 understood each packet. And **Leah's own base station board**, so far with no track power: an
 Arduino Mega making the real signal on a pin (`dcc_base("/dev/ttyACM0")`), checked by an Uno or Nano
 reading it back (`reader:`), its programs loaded by `load_dcc_program()` through arduino-cli;
-`examples/dcc_bench.leah` drives it and shows what the reader heard. **Next:** the motor shield and a
+`examples/dcc_bench.leah` drives it and shows what the reader heard; with the EX-MotorShield8874 on
+the Mega, `examples/dcc_throttle.leah` drives a real locomotive (first done on the owner's bench,
+2026-11-11). **Next:** the motor shield and a
 power supply, still with no locomotive (`design/model_railroading.md`, the safe ladder's step 3).
 
 | | |

@@ -1,0 +1,266 @@
+` A DCC throttle on Leah's own base station: an Arduino Mega running Leah's base station program with
+` an EX-MotorShield8874 on it, a 12 V supply in the shield's jack, and the track (or a treadmill) on
+` the shield's A screws (design/model_railroading.md). Choose the locomotive's address, connect, turn
+` the track power on, and drive: the speed, the direction, Stop (eased by the decoder), Emergency stop
+` (at once; also the Escape key), and the functions F0 to F12.
+
+$base = null
+$loco = null
+$speed_shown = -1
+
+$win = window(title: "DCC throttle", width: 800, height: 600, minimum_width: 740, minimum_height: 560)
+
+` -- the base station --
+$port_label = label(left: 20, top: 24, width: 110, text: "Base station:")
+$win.add($port_label)
+$port = popup_menu(left: 130, top: 20, width: 360)
+$win.add($port)
+$connect = button(left: 504, top: 18, width: 120, height: 34, text: "Connect")
+$win.add($connect)
+$power = switch(left: 640, top: 22, text: "Track power", enabled: false)
+$win.add($power)
+$status = label(left: 20, top: 60, width: 740, height: 40, multi_line: true, lock_right: true, text: "")
+$win.add($status)
+
+` -- the locomotive --
+$address_label = label(left: 20, top: 118, width: 70, text: "Address:")
+$win.add($address_label)
+$address = text_field(left: 90, top: 114, width: 70, text: "1")
+$win.add($address)
+$address_arrows = up_down_arrows(left: 162, top: 114, minimum_value: 1, maximum_value: 10239, value: 1)
+$win.add($address_arrows)
+$long = checkbox(left: 200, top: 116, text: "Long address")
+$win.add($long)
+$current = label(left: 420, top: 118, width: 340, lock_right: true, text: "")
+$win.add($current)
+
+` -- driving --
+$speed_label = label(left: 20, top: 170, width: 300, text: "Speed 0 of 126")
+$win.add($speed_label)
+$throttle = slider(left: 20, top: 196, width: 740, minimum_value: 0, maximum_value: 126, lock_right: true, enabled: false)
+$win.add($throttle)
+$direction = segmented_button(left: 20, top: 244, width: 240, enabled: false)
+$forward = $direction.add_segment("Forward", tag: "forward")
+$direction.add_segment("Reverse", tag: "reverse")
+$win.add($direction)
+$forward.selected = true
+$stop = button(left: 280, top: 240, width: 150, height: 40, text: "Stop", enabled: false)
+$win.add($stop)
+$emergency = button(left: 450, top: 240, width: 310, height: 40, text: "Emergency stop (Esc)", lock_right: true, enabled: false)
+$win.add($emergency)
+
+` -- the functions --
+$functions_box = group_box(left: 20, top: 300, width: 740, height: 150, text: "Functions", lock_right: true)
+$win.add($functions_box)
+$names = ["F0 Light", "F1 Bell", "F2 Horn", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]
+$function_buttons = []
+` (What each function was last set to, so a click sends only the one that changed.)
+$function_states = [false, false, false, false, false, false, false, false, false, false, false, false, false]
+foreach $names as $n: $words {
+    $b = button(left: 36 + ($n mod 7) * 102, top: 330 + ($n div 7) * 52, width: 94, height: 40, text: $words, _
+        button_type: "toggle", enabled: false)
+    $b.on_click = function() {
+        global $loco, $function_buttons, $function_states
+        foreach $function_buttons as $i: $fb {
+            if $function_states[$i] != $fb.value {
+                $function_states[$i] = $fb.value
+                if $loco != null {
+                    $loco.set_function($i, $fb.value)
+                }
+            }
+        }
+    }
+    $win.add($b)
+    $function_buttons[] = $b
+}
+
+$help = label(left: 20, top: 470, width: 740, height: 80, multi_line: true, lock_right: true, _
+    text: "Stop slows the locomotive as its decoder is set to; Emergency stop (or Escape) stops every " _
+    + "locomotive at once. Lifting a locomotive off the rails cuts its power too. The base station " _
+    + "turns the power off by itself on a short, or if this app stops talking to it.")
+$win.add($help)
+
+` The ports, the Mega chosen when there is one.
+function look_for_boards() {
+    global $port, $status
+    $port.remove_all_rows()
+    $ports = dcc_ports()
+    foreach $ports as $i: $p {
+        $port.add_row($p["port"] + ": " + $p["name"] + (if $p["allowed"] then "" else " (not allowed yet)"), tag: $p["port"])
+        if starts_with($p["name"], "Arduino Mega") or $port.selected_row_index < 0 {
+            $port.selected_row_index = $i
+        }
+    }
+    if count($ports) == 0 {
+        $status.text = "No board is plugged in: plug the Mega into USB, then start this app again."
+    } else {
+        $status.text = "Choose the locomotive's address, then Connect."
+    }
+}
+
+function set_driving_enabled($on) {
+    global $power, $throttle, $direction, $stop, $emergency, $function_buttons
+    foreach [$power, $throttle, $direction, $stop, $emergency] as $c {
+        $c.enabled = $on
+    }
+    foreach $function_buttons as $b {
+        $b.enabled = $on
+    }
+}
+
+` The locomotive at the address shown: the old one stopped first. Its direction, speed 0, and its
+` functions as the buttons show are sent at once (some decoders keep their headlight off until they
+` have been told a direction).
+function take_locomotive() {
+    global $base, $loco, $address, $long, $throttle, $direction, $function_buttons, $status
+    if not is_digits(trim($address.text)) or to_number($address.text) < 1 or to_number($address.text) > 10239 {
+        $status.text = "An address is a whole number from 1 to 10239."
+        return
+    }
+    $n = to_number($address.text)
+    if $n > 127 {
+        $long.value = true
+    }
+    if $loco != null {
+        $loco.speed = 0
+    }
+    $throttle.value = 0
+    $loco = locomotive($n, long: $long.value)
+    $loco.direction = $direction.selected_segment_tag ?? "forward"
+    $loco.speed = 0
+    foreach $function_buttons as $i: $b {
+        if $b.value {
+            $loco.set_function($i, true)
+        }
+    }
+    $status.text = "Driving locomotive " + $n + (if $long.value then " (long address)" else "") + "."
+}
+
+$connect.on_click = function() {
+    global $base, $loco, $port, $connect, $power, $status
+    if $base != null {
+        $base.close()
+        $base = null
+        $loco = null
+        $power.value = false
+        set_driving_enabled(false)
+        $connect.text = "Connect"
+        $status.text = "Disconnected: the track power is off."
+        return
+    }
+    if $port.selected_row_tag == null {
+        $status.text = "No board to connect to."
+        return
+    }
+    $status.text = "Connecting (the Mega starts its program again as Leah opens it)..."
+    call_later(50, function() {
+        global $base, $port, $connect, $status
+        try {
+            $base = dcc_base($port.selected_row_tag)
+            $base.current_limit = 1000
+        } catch $e {
+            $status.text = $e.message
+            $base = null
+            return
+        }
+        take_locomotive()
+        set_driving_enabled(true)
+        $connect.text = "Disconnect"
+        if not $base.shield {
+            $status.text = "Connected, but the Mega has no motor shield: the signal stays on pin 12, not the track."
+        }
+    })
+}
+
+$power.on_value_changed = function() {
+    global $base, $power
+    if $base != null and $base.power != $power.value {
+        $base.power = $power.value
+    }
+}
+
+$address.on_text_changed = function() {
+    global $address, $address_arrows
+    if is_digits(trim($address.text)) {
+        $n = to_number($address.text)
+        if $n >= 1 and $n <= 10239 and $address_arrows.value != $n {
+            $address_arrows.value = $n
+        }
+    }
+}
+$address.on_key_down = function($key) {
+    global $base
+    if ($key == "Return" or $key == "Enter") and $base != null {
+        take_locomotive()
+    }
+}
+$address_arrows.on_value_changed = function() {
+    global $base, $address, $address_arrows
+    if $address.text != to_text($address_arrows.value) {
+        $address.text = to_text($address_arrows.value)
+    }
+    if $base != null {
+        take_locomotive()
+    }
+}
+$long.on_value_changed = function() {
+    global $base
+    if $base != null {
+        take_locomotive()
+    }
+}
+
+$throttle.on_value_changed = function() {
+    global $loco, $throttle, $speed_label
+    $s = round($throttle.value)
+    $speed_label.text = "Speed " + $s + " of 126"
+    if $loco != null and $loco.speed != $s {
+        $loco.speed = $s
+    }
+}
+
+$direction.on_segment_click = function() {
+    global $loco, $direction
+    if $loco != null and $direction.selected_segment_tag != null {
+        $loco.direction = $direction.selected_segment_tag
+    }
+}
+
+$stop.on_click = function() {
+    global $throttle
+    $throttle.value = 0
+}
+
+function emergency_stop() {
+    global $base, $throttle
+    if $base != null {
+        $base.emergency_stop()
+    }
+    $throttle.value = 0
+}
+$emergency.on_click = function() {
+    emergency_stop()
+}
+$win.add_shortcut("Escape", function() {
+    emergency_stop()
+})
+
+` Every quarter second: the track's current, and the power switch put right when the base station
+` turned the power off by itself (with its reason).
+$clock = timer(period: 250, run_mode: "multiple")
+$clock.on_run = function() {
+    global $base, $power, $current, $status
+    if $base == null {
+        $current.text = ""
+        return
+    }
+    if $power.value and not $base.power {
+        $w = last_warning()
+        $status.text = if $w == null then "The base station turned the track power off." else $w["message"]
+        $power.value = false
+    }
+    $current.text = if $base.current == null then "" else "Track current: " + $base.current + " mA"
+}
+
+look_for_boards()
+$win.show()
