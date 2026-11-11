@@ -1095,7 +1095,7 @@ fn a_decoder_is_identified_and_reset_only_when_asked() {
     // identify_decoder (the maker by the NMRA's list, CV 29 by name, a forgotten consist warned of);
     // reset_decoder only with confirm: true, by the maker's own reset; an unknown maker's refused
     // unless the script names the reset; decoder_maker_name, cv29_parts, make_cv29.
-    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=7,29=38,8=141,7=71,19=5,3=9,17=194,18=218,253=1,254=2,255=17,256=36"]) else {
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=7,29=38,8=141,7=71,19=5,3=9,17=194,18=218,253=1,254=2,255=17,256=36,105=1,106=3"]) else {
         eprintln!("skipped: no python3 for the stand-in boards");
         return;
     };
@@ -1103,7 +1103,7 @@ fn a_decoder_is_identified_and_reset_only_when_asked() {
         r#"$base = dcc_base("{}")
 $id = $base.identify_decoder()
 print([$id["maker"], $id["maker_id"], $id["version"], $id["consist"], $id["cv29"]["long_address"], $id["cv29"]["speed_steps"]])
-print([$id["family"], $id["product"]])
+print([$id["family"], $id["firmware"], $id["product"]])
 try {{
     $base.reset_decoder()
 }} catch $e {{
@@ -1122,7 +1122,7 @@ print([decoder_maker_name(153), decoder_maker_name(250), cv29_parts(38)["long_ad
         id.stdout,
         concat!(
             "[\"Throttle-Up (Soundtraxx)\", 141, 71, 5, true, 28]\n",
-            "[\"Tsunami2\", [\"customer\": 1, \"sound\": \"diesel\", \"revision\": 2, \"id\": 36]]\n",
+            "[\"Tsunami2\", \"1.3\", [\"customer\": 1, \"sound\": \"diesel\", \"revision\": 2, \"id\": 36]]\n",
             "programming_error: dcc_base.reset_decoder() sets every one of the decoder's settings back to the maker's: give confirm: true to do it\n",
             "[\"maker\": \"Throttle-Up (Soundtraxx)\", \"cv\": 8, \"value\": 8, \"address\": 3, \"long\": false]\n",
             "[0, 0]\n",
@@ -1130,6 +1130,13 @@ print([decoder_maker_name(153), decoder_maker_name(250), cv29_parts(38)["long_ad
         )
     );
     assert!(id.stderr.contains("the decoder's consist address (CV 19) is 5"), "{}", id.stderr);
+
+    // An older SoundTraxx family: CV 105 the firmware, CV 106 the set of factory settings.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=1,29=6,8=141,7=82,19=0,105=12,106=40"]) else { return };
+    let older = run("identify-older", &format!("$base = dcc_base(\"{}\")\n$id = $base.identify_decoder()\nprint([$id[\"family\"], $id[\"firmware\"], $id[\"product\"]])\n", boards.base));
+    drop(boards);
+    assert!(older.success, "{}", older.stderr);
+    assert_eq!(older.stdout, "[\"Sound Value, RTR, Mainline\", \"12\", [\"settings_set\": 40]]\n");
 
     // A maker whose reset isn't known: refused, unless the script gives it.
     let Some(boards) = fake_boards(&["--shield", "--cvs", "1=7,29=6,8=99"]) else { return };

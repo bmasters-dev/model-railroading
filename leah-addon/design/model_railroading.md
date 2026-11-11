@@ -350,7 +350,10 @@ gives the maker by the NMRA's list (`src/makers.rs`, the 168 IDs of Appendix A t
 usual "it won't respond"), and CV 29 by name. **Product IDs:** only SoundTraxx's own guide (rev. F,
 2025-09) says what its CV 7 values mean (the family) and where Tsunami2, Econami, and Blunami keep the
 product (CV 253 customer, 254 sound type, 255 bits 3 to 7 the revision, 256 the product number);
-the product number is given as a number, its name left to the decoder definitions (item 4). ESU's
+the product number is given as a number, its name left to the decoder definitions (item 4). Every
+SoundTraxx decoder's firmware is in CV 105/106 (major.minor in those three families; in the others
+CV 105 the version and CV 106 the factory settings set, given as `settings_set`). The owner's
+locomotive (2026-11-11): CV 7 = 82, "Sound Value, RTR, Mainline", a factory-fitted sound decoder. ESU's
 LokSound 5 manual documents no product ID; other makers' come with their definitions. Global
 functions needing no base: `decoder_maker_name`, `cv29_parts`, `make_cv29`.
 

@@ -381,7 +381,8 @@ Says which decoder is in the locomotive on the **programming track**, from the s
 | `maker` | the maker's name for it, as the NMRA lists it (`"Throttle-Up (Soundtraxx)"`, `"Electronic Solutions Ulm GmbH"`, `"Train Control Systems"`), or `null` for a number the NMRA hasn't given out ([decoder_maker_name](ref:Decoder functions#decoder_maker_name)) |
 | `version` | CV 7, the decoder's version (what it means is the maker's) |
 | `family` | the product family CV 7 stands for, where the maker says: SoundTraxx's (`"Tsunami2"`, `"Econami"`, `"Blunami"`, ...); `null` otherwise |
-| `product` | SoundTraxx's Tsunami2, Econami, and Blunami say which product they are: an array of `customer` (CV 253: 1 for a decoder bought on its own, another number for one fitted by a model's maker), `sound` (`"steam"`, `"diesel"`, `"electric"`, `"UK steam"`, `"UK diesel"`), `revision`, and `id` (CV 256, the number in SoundTraxx's product list). `null` for other decoders |
+| `firmware` | the decoder's firmware version, as text, where the maker says where it is: SoundTraxx's (CV 105 and 106: `"1.3"` in a Tsunami2, Econami, or Blunami; CV 105 alone in the others). `null` otherwise |
+| `product` | SoundTraxx's Tsunami2, Econami, and Blunami say which product they are: an array of `customer` (CV 253: 1 for a decoder bought on its own, another number for one fitted by a model's maker), `sound` (`"steam"`, `"diesel"`, `"electric"`, `"UK steam"`, `"UK diesel"`), `revision`, and `id` (CV 256, the number in SoundTraxx's product list). SoundTraxx's other decoders give `settings_set` (CV 106), the set of factory settings they came with, which tells a model maker's fitted decoder apart. `null` for other makers |
 | `consist` | CV 19, the consist address it also answers to (0 for none) |
 | `consist_reversed` | `true` when it runs reversed in that consist |
 | `cv29` | its configuration (CV 29) by name, as [cv29_parts](ref:Decoder functions#cv29_parts) gives it |

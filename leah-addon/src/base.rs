@@ -716,21 +716,30 @@ impl Object for DccBase {
                     let config = t.read_cv_tries(29, tries)?;
                     // (SoundTraxx's Tsunami2, Econami, and Blunami say which product they are in CV 253
                     // to 256: its own "product identification" guide.)
-                    let product = if maker == 141 && (70..=72).contains(&version) {
-                        let mut v = Vec::new();
-                        for cv in 253..=256 {
-                            v.push(t.read_cv_tries(cv, tries)?);
+                    // (Every SoundTraxx decoder keeps its firmware in CV 105 and 106: the version as
+                    // major and minor in a Tsunami2, Econami, or Blunami; in the others CV 105 is the
+                    // version and CV 106 the set of factory settings, a fitted decoder's part number.)
+                    let newer = maker == 141 && (70..=72).contains(&version);
+                    let (firmware, product) = if maker == 141 {
+                        let (major, minor) = (t.read_cv_tries(105, tries)?, t.read_cv_tries(106, tries)?);
+                        if newer {
+                            let mut v = Vec::new();
+                            for cv in 253..=256 {
+                                v.push(t.read_cv_tries(cv, tries)?);
+                            }
+                            (Value::from(format!("{major}.{minor}")), Value::map([
+                                ("customer", Value::from(v[0])),
+                                ("sound", makers::soundtraxx_sound(v[1]).map_or(Value::Null, Value::from)),
+                                ("revision", Value::from(v[2] >> 3)),
+                                ("id", Value::from(v[3])),
+                            ]))
+                        } else {
+                            (Value::from(major.to_string()), Value::map([("settings_set", Value::from(minor))]))
                         }
-                        Value::map([
-                            ("customer", Value::from(v[0])),
-                            ("sound", makers::soundtraxx_sound(v[1]).map_or(Value::Null, Value::from)),
-                            ("revision", Value::from(v[2] >> 3)),
-                            ("id", Value::from(v[3])),
-                        ])
                     } else {
-                        Value::Null
+                        (Value::Null, Value::Null)
                     };
-                    Ok(identity_value(maker, version, consist, config, product))
+                    Ok(identity_value(maker, version, consist, config, firmware, product))
                 };
                 if background {
                     self.read_in_background(turn, Value::from("identity"), identify);
@@ -893,12 +902,13 @@ fn maker_reset(maker: u8) -> Option<(i64, i64)> {
 
 /// What `identify_decoder` gives: the maker (by the NMRA's list), its version, the consist address,
 /// and CV 29's parts.
-fn identity_value(maker: i64, version: i64, consist: i64, config: i64, product: Value) -> Value {
+fn identity_value(maker: i64, version: i64, consist: i64, config: i64, firmware: Value, product: Value) -> Value {
     Value::map([
         ("maker_id", Value::from(maker)),
         ("maker", makers::maker_name(maker as u8).map_or(Value::Null, Value::from)),
         ("version", Value::from(version)),
         ("family", makers::family_name(maker as u8, version as u8).map_or(Value::Null, Value::from)),
+        ("firmware", firmware),
         ("product", product),
         ("consist", Value::from(consist & 0x7F)),
         ("consist_reversed", Value::from(consist & 0x80 != 0)),
