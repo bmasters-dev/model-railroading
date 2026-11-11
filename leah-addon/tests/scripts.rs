@@ -1880,3 +1880,306 @@ foreach [function() { $adv.add($adv) }, function() { consist(address: 128) }, fu
         ]
     );
 }
+
+// ---- the phone throttle server (model-railroading#12) ----
+
+/// A script started with this addon, its output read a line at a time while it runs.
+struct Running {
+    child: std::process::Child,
+    lines: std::sync::mpsc::Receiver<String>,
+    dir: PathBuf,
+}
+
+impl Running {
+    fn start(test: &str, script: &str) -> Running {
+        let dir = addons_folder(test);
+        let file = dir.join("script.leah");
+        std::fs::write(&file, script).unwrap();
+        let mut child = Command::new(leah())
+            .arg(&file)
+            .env("LEAH_3RD_PARTY_ADDONS", &dir)
+            .env("LEAH_USER_ADDONS", "")
+            .env("LEAH_TEST_DCC_PORTS", "/nonexistent")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("Leah runs");
+        let out = child.stdout.take().unwrap();
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for l in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                let _ = tx.send(l);
+            }
+        });
+        Running { child, lines, dir }
+    }
+
+    /// The script's next printed line (within 10 seconds).
+    fn next(&self) -> String {
+        self.lines.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| "(nothing printed)".to_string())
+    }
+
+    /// Waits for the script's end (within 10 seconds): whether it ended well, and its error output.
+    fn end(mut self) -> (bool, String) {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                let mut err = String::new();
+                use std::io::Read;
+                let _ = self.child.stderr.take().unwrap().read_to_string(&mut err);
+                let _ = std::fs::remove_dir_all(&self.dir);
+                return (status.success(), err);
+            }
+            if start.elapsed() > std::time::Duration::from_secs(10) {
+                let _ = self.child.kill();
+                let _ = std::fs::remove_dir_all(&self.dir);
+                return (false, "the script didn't end".to_string());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+/// A phone throttle app, as far as the protocol goes: lines out, lines in.
+struct Phone {
+    stream: std::net::TcpStream,
+    reader: std::io::BufReader<std::net::TcpStream>,
+    heard: Vec<String>,
+}
+
+impl Phone {
+    fn connect(port: u16) -> Phone {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server listens");
+        stream.set_read_timeout(Some(std::time::Duration::from_millis(300))).unwrap();
+        let reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        Phone { stream, reader, heard: Vec::new() }
+    }
+
+    fn say(&mut self, line: &str) {
+        use std::io::Write;
+        self.stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+    }
+
+    /// Everything the server sent until it goes quiet (a little while), kept in `heard` too.
+    fn listen(&mut self) -> Vec<String> {
+        use std::io::BufRead;
+        let mut got = Vec::new();
+        let start = std::time::Instant::now();
+        let mut quiet_since = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(5) {
+            let mut line = String::new();
+            match self.reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    got.push(line.trim_end().to_string());
+                    quiet_since = std::time::Instant::now();
+                }
+                Err(_) => {
+                    if quiet_since.elapsed() > std::time::Duration::from_millis(400) {
+                        break;
+                    }
+                }
+            }
+        }
+        self.heard.extend(got.clone());
+        got
+    }
+}
+
+#[test]
+fn phones_drive_locomotives_through_the_phone_throttle_server() {
+    let script = r#"
+$base = dcc_base(simulate: true)
+$r = roster(join_path(make_temp_path(), "roster.json"))
+$e = $r.add("UP 792", address: 792)
+$e.set_function(0, "Headlight")
+$e.set_function(2, "Horn", momentary: true)
+$server = phone_throttle_server(port: 0, name: "Test Railroad", roster: $r, announce: false, heartbeat: 30)
+$server.add_turnout("T1", label: "Yard lead")
+$server.add_route("R1", label: "Main")
+$server.on_client = function($name) {
+    print("client " + $name)
+}
+$server.on_turnout_request = function($name, $state) {
+    global $base
+    $d = $base.decoder(792, long: true)
+    print("turnout " + $name + " " + $state + ", locomotive at " + $d["speed"] + " " + $d["direction"] + ", F0 " + $d["functions"][0])
+}
+$server.on_client_left = function($name) {
+    global $server
+    print("left " + $name)
+    $server.close()
+}
+print($server.port)
+"#;
+    let run = Running::start("phone", script);
+    let port: u16 = run.next().trim().parse().expect("the server's port printed");
+    let mut phone = Phone::connect(port);
+    let hello = phone.listen();
+    assert_eq!(hello.first().map(String::as_str), Some("VN2.0"), "the protocol's version first: {hello:?}");
+    for want in ["RL1]\\[UP 792}|{792}|{L", "PPA0", "PTL]\\[T1}|{Yard lead}|{2", "PRL]\\[R1}|{Main}|{4", "RCC0", "*30", "HTLeah", "HtTest Railroad"] {
+        assert!(hello.iter().any(|l| l == want), "{want} in {hello:?}");
+    }
+    phone.say("HUphone-1");
+    phone.say("NJohn's Phone");
+    assert!(phone.listen().contains(&"*30".to_string()), "the heartbeat's seconds after the name");
+    assert_eq!(run.next(), "client John's Phone");
+    // (Track power on: every phone told.)
+    phone.say("PPA1");
+    assert!(phone.listen().contains(&"PPA1".to_string()));
+    // (A locomotive from the roster: its labels, its functions, speed, direction, speed steps.)
+    phone.say("M0+L792<;>EUP 792");
+    let took = phone.listen();
+    assert_eq!(took.first().map(String::as_str), Some("M0+L792<;>"), "{took:?}");
+    assert!(took.iter().any(|l| l.starts_with("M0LL792<;>]\\[Headlight]\\[]\\[Horn]\\[")), "its keys' labels: {took:?}");
+    for want in ["M0AL792<;>F00", "M0AL792<;>F028", "M0AL792<;>V0", "M0AL792<;>R1", "M0AL792<;>s1"] {
+        assert!(took.iter().any(|l| l == want), "{want} in {took:?}");
+    }
+    // (Its speed: not echoed to the phone dragging the slider.)
+    phone.say("M0A*<;>V63");
+    assert!(!phone.listen().iter().any(|l| l.contains("<;>V")), "no speed echoed back");
+    // (A latching key, the headlight: on at its press, its state told; nothing at its let-go.)
+    phone.say("M0A*<;>F10");
+    assert_eq!(phone.listen(), vec!["M0AL792<;>F10".to_string()]);
+    phone.say("M0A*<;>F00");
+    assert!(phone.listen().is_empty(), "a latching key's let-go changes nothing");
+    // (A momentary key, the horn: on while pressed.)
+    phone.say("M0AL792<;>F12");
+    assert_eq!(phone.listen(), vec!["M0AL792<;>F12".to_string()]);
+    phone.say("M0AL792<;>F02");
+    assert_eq!(phone.listen(), vec!["M0AL792<;>F02".to_string()]);
+    // (Its direction, then a question about its speed.)
+    phone.say("M0AL792<;>R0");
+    phone.say("M0AL792<;>qV");
+    assert!(phone.listen().contains(&"M0AL792<;>V63".to_string()));
+    // (A turnout thrown: every phone told, the script's event with what the decoder understood.)
+    phone.say("PTATT1");
+    assert!(phone.listen().contains(&"PTA4T1".to_string()));
+    assert_eq!(run.next(), "turnout T1 thrown, locomotive at 63 reverse, F0 true");
+    // (An address nothing knows: the phone is told.)
+    phone.say("M1+S200<;>S200");
+    assert!(phone.listen().iter().any(|l| l.starts_with("HMLeah: S200 isn't a locomotive's address")));
+    // (The phone goes: its locomotives stopped, the script told.)
+    phone.say("Q");
+    assert_eq!(run.next(), "left John's Phone");
+    let (ok, err) = run.end();
+    assert!(ok, "{err}");
+}
+
+#[test]
+fn a_quiet_phones_locomotives_stop_and_another_phone_hears_of_changes() {
+    let script = r#"
+$base = dcc_base(simulate: true)
+$base.power = true
+$loco = locomotive(3)
+$server = phone_throttle_server(port: 0, announce: false, heartbeat: 1)
+$server.on_turnout_request = function($name, $state) {
+    global $loco, $server
+    print("speed now " + $loco.speed)
+    $loco.set_function(1, true)
+}
+$server.on_client_left = function($name) {
+    global $server
+    if count($server.clients) == 0 {
+        $server.close()
+    }
+}
+$server.add_turnout("T9")
+print($server.port)
+"#;
+    let run = Running::start("phone_quiet", script);
+    let port: u16 = run.next().trim().parse().expect("the server's port printed");
+    let mut a = Phone::connect(port);
+    let mut b = Phone::connect(port);
+    a.listen();
+    b.listen();
+    a.say("NA");
+    b.say("NB");
+    a.say("M0+S3<;>S3");
+    b.say("MT+S3<;>S3");
+    a.listen();
+    b.listen();
+    // (A's speed reaches B, which holds the same locomotive: the script's own, shared.)
+    a.say("M0A*<;>V40");
+    assert!(b.listen().contains(&"MTAS3<;>V40".to_string()));
+    a.listen();
+    // (A change by the script reaches both.)
+    a.say("PTATT9");
+    assert_eq!(run.next(), "speed now 40");
+    assert!(a.listen().contains(&"M0AS3<;>F11".to_string()));
+    assert!(b.listen().contains(&"MTAS3<;>F11".to_string()));
+    // (A asks for the heartbeat, then goes quiet past it (and its grace, two seconds more): the
+    // locomotive stopped at once, A told why.)
+    a.say("*+");
+    std::thread::sleep(std::time::Duration::from_millis(3800));
+    let told = a.listen();
+    assert!(told.iter().any(|l| l.starts_with("HMLeah: nothing from this phone for 1 seconds")), "{told:?}");
+    assert!(b.listen().contains(&"MTAS3<;>V0".to_string()), "B hears the stop");
+    a.say("Q");
+    b.say("Q");
+    let (ok, err) = run.end();
+    assert!(ok, "{err}");
+}
+
+#[test]
+fn the_phone_server_sample_serves_and_throws_a_turnout() {
+    // Start on the simulated base station (no boards), then a turnout thrown from the window: its
+    // button's words, the server's state, then quit.
+    let driver = "call_later(300, function() {\n    global $start\n    $start.click()\n    call_later(800, function() {\n        global $t1, $state, $server\n        $t1.click()\n        print($t1.text)\n        print(starts_with($state.text, \"Serving as \\\"My Railroad\\\" on port \"))\n        print($server.running)\n        quit()\n    })\n})\n";
+    let Some(printed) = run_example_on_screen_with("phone-sample", "phone_server.leah", None, driver, 10000, &[("LEAH_TEST_PHONE_SERVER", "1")]) else { return };
+    assert!(printed.contains("T1 Yard lead: thrown\ntrue\ntrue\n"), "{printed}");
+}
+
+#[test]
+fn the_phone_server_keeps_phones_told_the_truth() {
+    let script = r#"
+$base = dcc_base(simulate: true)
+$r = roster(join_path(make_temp_path(), "roster.json"))
+$e = $r.add("Slow }|{ switcher", address: 7, speed_limit: 63)
+$server = phone_throttle_server(port: 0, roster: $r, announce: false, heartbeat: 30)
+$server.add_turnout("T1")
+$server.on_turnout_request = function($name, $state) {
+    global $base, $server
+    if $state == "thrown" {
+        $base.power = true
+        $server.heartbeat = 12
+    } else {
+        print($server.clients[0]["locomotives"])
+    }
+}
+$server.on_client_left = function($name) {
+    global $server
+    $server.close()
+}
+print($server.port)
+"#;
+    let run = Running::start("phone_truth", script);
+    let port: u16 = run.next().trim().parse().expect("the server's port printed");
+    let mut phone = Phone::connect(port);
+    let hello = phone.listen();
+    // (A roster name holding the protocol's separator: sent without it, so the list keeps its shape.)
+    assert!(hello.contains(&"RL1]\\[Slow   switcher}|{7}|{S".to_string()), "{hello:?}");
+    phone.say("NP");
+    phone.listen();
+    // (Full speed asked of a locomotive limited to half: the phone told the speed it runs at.)
+    phone.say("M0+S7<;>ESlow }|{ switcher");
+    phone.listen();
+    phone.say("M0AS7<;>V126");
+    assert!(phone.listen().contains(&"M0AS7<;>V63".to_string()), "the capped speed told");
+    // (The script switching the power on and the heartbeat to 12 seconds: the phone told both.)
+    phone.say("PTATT1");
+    let told = phone.listen();
+    assert!(told.contains(&"PPA1".to_string()), "{told:?}");
+    assert!(told.contains(&"*12".to_string()), "{told:?}");
+    // (Let go of and taken again: the same locomotive, still running as it was.)
+    phone.say("M0-S7<;>r");
+    assert!(phone.listen().contains(&"M0-S7<;>".to_string()));
+    phone.say("M1+S7<;>S7");
+    assert!(phone.listen().contains(&"M1AS7<;>V63".to_string()), "still at its speed");
+    phone.say("PTACT1");
+    assert_eq!(run.next(), "1");
+    phone.say("Q");
+    let (ok, err) = run.end();
+    assert!(ok, "{err}");
+}

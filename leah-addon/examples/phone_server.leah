@@ -1,0 +1,164 @@
+` Phone throttles (design/model_railroading.md, "Phase B, item 8"): phone apps that work with
+` WiThrottle (Engine Driver on Android, WiThrottle on iPhone, and others) drive the locomotives on
+` your base station over the Wi-Fi. Choose the base station (or the simulated one), then Start: the
+` phones on the same network list this server by its name. Each phone takes a locomotive by its
+` address or from the roster (its keys labelled as the roster says), and can throw the two
+` turnouts here; the fast clock shows on the phones. A phone that goes quiet (its battery flat, the
+` Wi-Fi lost) has its locomotives stopped.
+
+$base = null
+$server = null
+$roster = roster()
+
+$win = window(title: "Phone throttles", width: 620, height: 470, minimum_width: 560, minimum_height: 420)
+
+$port_label = label(left: 20, top: 24, width: 110, text: "Base station:")
+$win.add($port_label)
+$port = popup_menu(left: 130, top: 20, width: 300)
+$win.add($port)
+$name_label = label(left: 20, top: 68, width: 110, text: "Server's name:")
+$win.add($name_label)
+$name = text_field(left: 130, top: 64, width: 300, text: "My Railroad")
+$win.add($name)
+$start = button(left: 444, top: 18, width: 156, height: 34, text: "Start", lock_right: true)
+$win.add($start)
+$power = button(left: 444, top: 62, width: 156, height: 34, text: "Track power on", lock_right: true, enabled: false)
+$win.add($power)
+
+$state = label(left: 20, top: 110, width: 580, lock_right: true, text: "Not serving")
+$win.add($state)
+$phones_label = label(left: 20, top: 144, width: 280, text: "Phones connected:", bold: true)
+$win.add($phones_label)
+$phones = list_box(left: 20, top: 168, width: 290, height: 200, column_count: 2, has_header: true, headers: ["Phone", "Locomotives"], column_widths: "*, 100", lock_bottom: true)
+$win.add($phones)
+$turnouts_label = label(left: 330, top: 144, width: 270, text: "Turnouts (thrown from a phone too):", bold: true, lock_right: true)
+$win.add($turnouts_label)
+$t1 = button(left: 330, top: 168, width: 270, height: 34, text: "T1 Yard lead: closed", lock_right: true, enabled: false)
+$win.add($t1)
+$t2 = button(left: 330, top: 210, width: 270, height: 34, text: "T2 Main crossover: closed", lock_right: true, enabled: false)
+$win.add($t2)
+$clock = checkbox(left: 330, top: 260, width: 270, text: "Fast clock: 6:00 at four times", lock_right: true, enabled: false)
+$win.add($clock)
+$help = label(left: 20, top: 384, width: 580, height: 70, multi_line: true, lock_right: true, lock_top: false, lock_bottom: true, _
+    text: "On the phone: open the throttle app, choose this server by its name (or type this computer's address and the port shown above), then take a locomotive by its address or from the roster.")
+$win.add($help)
+
+function show() {
+    global $server, $base, $state, $phones, $power, $t1, $t2
+    if $server == null {
+        $state.text = "Not serving"
+        $phones.remove_all_rows()
+        return
+    }
+    $state.text = "Serving as \"" + $server.name + "\" on port " + $server.port + " · track power " + (if $base.power then "on" else "off")
+    $power.text = if $base.power then "Track power off" else "Track power on"
+    $phones.remove_all_rows()
+    foreach $server.clients as $c {
+        $phones.add_row(if $c["name"] == "" then $c["address"] else $c["name"], to_text($c["locomotives"]))
+    }
+    foreach $server.turnouts as $t {
+        $words = $t["name"] + " " + $t["label"] + ": " + $t["state"]
+        if $t["name"] == "T1" {
+            $t1.text = $words
+        } else {
+            $t2.text = $words
+        }
+    }
+}
+
+function serving($on) {
+    global $start, $power, $t1, $t2, $clock, $name, $port
+    $start.text = if $on then "Stop" else "Start"
+    foreach [$power, $t1, $t2, $clock] as $c {
+        $c.enabled = $on
+    }
+    $name.enabled = not $on
+    $port.enabled = not $on
+}
+
+$start.on_click = function() {
+    global $base, $server, $port, $name, $roster, $state
+    if $server != null {
+        $server.close()
+        $server = null
+        $base.close()
+        $base = null
+        serving(false)
+        show()
+        return
+    }
+    try {
+        $base = if $port.selected_row_tag == "simulate" then dcc_base(simulate: true) else dcc_base($port.selected_row_tag)
+        $server = phone_throttle_server(name: $name.text, base: $base, roster: $roster)
+    } catch $e {
+        $state.text = $e.message
+        if $base != null {
+            $base.close()
+            $base = null
+        }
+        return
+    }
+    $server.add_turnout("T1", label: "Yard lead")
+    $server.add_turnout("T2", label: "Main crossover")
+    $server.on_client = function($who) {
+        show()
+    }
+    $server.on_client_left = function($who) {
+        show()
+    }
+    $server.on_turnout_request = function($which, $how) {
+        ` (Here a real turnout would be thrown: an accessory decoder, a servo, a relay.)
+        show()
+    }
+    ` (Phones taking and letting go of locomotives, and their speed, change the list's counts.)
+    $base.on_locomotive_changed = function($loco) {
+        show()
+    }
+    serving(true)
+    show()
+}
+
+$power.on_click = function() {
+    global $base
+    $base.power = not $base.power
+    show()
+}
+
+function flip($which) {
+    global $server
+    foreach $server.turnouts as $t {
+        if $t["name"] == $which {
+            $server.set_turnout($which, if $t["state"] == "closed" then "thrown" else "closed")
+        }
+    }
+    show()
+}
+
+$t1.on_click = function() {
+    flip("T1")
+}
+$t2.on_click = function() {
+    flip("T2")
+}
+
+$clock.on_value_changed = function() {
+    global $server, $clock
+    if $clock.value {
+        $server.set_clock("06:00", rate: 4)
+    } else {
+        $server.stop_clock()
+    }
+}
+
+$port.add_row("Simulated (no board)", tag: "simulate")
+foreach dcc_ports() as $p {
+    $port.add_row($p["port"] + ": " + $p["name"], tag: $p["port"])
+    if starts_with($p["name"], "Arduino Mega") {
+        $port.selected_row_index = $port.row_count - 1
+    }
+}
+if $port.selected_row_index < 0 {
+    $port.selected_row_index = 0
+}
+show()
+$win.show()

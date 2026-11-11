@@ -279,6 +279,18 @@ impl Roster {
         self.0.borrow().entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)).map(|e| e.id)
     }
 
+    /// Every entry's record now (copies), in the roster's order: what a phone throttle server lists.
+    pub(crate) fn entries_now(&self) -> Vec<EntryData> {
+        self.0.borrow().entries.clone()
+    }
+
+    /// The entry named so (upper and lower case alike), as an object of its own, or None.
+    pub(crate) fn entry_named(&self, name: &str, call: &mut Call) -> Option<Rc<RosterEntry>> {
+        let id = self.named(name)?;
+        let value = self.entry_object(call, id);
+        call.own_value::<RosterEntry>(&value)
+    }
+
     fn add_entry(&self, mut e: EntryData) -> u64 {
         let mut r = self.0.borrow_mut();
         e.id = r.next_id;

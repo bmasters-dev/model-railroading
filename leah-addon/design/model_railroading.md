@@ -455,6 +455,61 @@ address (speed flipped for a reversed unit; functions only as CV 21 and 22 allow
 true)` (and identify_decoder's warning, item 3). Not built (as people ask): reordering members, saved
 consists in the roster, NCE's consists (Phase E), the long consist address (CV 20).
 
+## Phase B, item 8: the phone throttle server (built 2026-11-11, model-railroading#12)
+
+`phone_throttle_server(port: 12090, name:, base:, roster:, heartbeat: 10, announce: true)`: phone apps
+that work with WiThrottle (Engine Driver, WiThrottle, and others) drive the base station's
+locomotives over the Wi-Fi. Built from the protocol's published descriptions (its author publishes
+no specification), never another program's code; never called "WiThrottle" itself (the naming
+decision below). Claude's design, under the standing policy:
+
+- **Leah's kit had to grow first.** The phones' commands arrive on network threads, but the
+  locomotives live on the script's thread and need a call's context; events reach only the script's
+  functions. Leah's addon interface level 6 (bmasters-dev/leah-language f5155531): `Events::post`
+  runs the object's own function on the script's thread with a `Call`, `post_last` ends the work in
+  one hand-over, and `keep_working` keeps a script without windows waiting with no event's function
+  set. The server needs Leah 0.1.0-alpha.50 or later and says so on an older one.
+- **Threads:** one listens (a free port with `port: 0`), one reads each phone (a line ends with `\n`,
+  `\r`, or both), one writes each phone's queued lines (a phone that stops reading never holds up the
+  script), and one watches the heartbeats and sends the fast clock each fast minute. Every phone
+  line is posted to the server (`phone_line`, and `phone_joined`, `phone_left`, `phone_quiet`: the
+  server's own functions, not listed for scripts).
+- **What a phone is sent first:** VN2.0, the roster (RL, its names without the protocol's
+  separators), the power (PPA), the turnouts and routes (PTT/PTL, PRT/PRL) when the script added some,
+  RCC0, the heartbeat (`*N`), HTLeah, Ht and the name, and the clock (PFT) when set.
+- **Locomotives:** a phone takes one by address or roster name (`E`); the base's own locomotive at
+  that address is used when the script has one (so the two never disagree), else one the server makes
+  and keeps while it serves (let go of, it runs on as it was, and is the same when taken again), its
+  steps, limit, momentary keys, and labels from its roster entry (`base::from_entry`, shared with
+  `locomotive()`). Speed V (0 to 126, fitted to the locomotive's own steps and limit), direction R,
+  F press and let-go (momentary as the roster says, or as the phone's `m` says), f forced, X, I, q
+  questions, s answered with the decoder's steps, r and d letting go.
+- **What phones are told after:** each change to a locomotive (from a phone, the script, the
+  emergency stop) reaches every phone holding it, only what differs from what it was told last; the
+  phone whose command it was isn't told its speed or direction back when they came out as it asked
+  (a slider being dragged), but is when they didn't (a speed limit), and always hears its functions
+  (a latching key needs to). Power changes from anywhere (`DccBase::power_now`) reach every phone; a
+  changed heartbeat too.
+- **Safety:** a phone that asked for the heartbeat and goes quiet past it plus a grace (half of it, at
+  least 2 s) has its locomotives emergency-stopped and is told why; one that disconnects (or quits, or
+  the server closes) has them stopped, eased. A server serves until `close()` or the program's end,
+  held by the script or not (`SERVING`), so trains are never left with no one to stop them.
+- **Turnouts and routes** are the script's: `add_turnout`, `set_turnout`, `add_route`, `set_route`;
+  a phone's request sets the state at once (every phone told) and fires `on_turnout_request` /
+  `on_route_request` for the script to move the real one (or set it back).
+- **Announced** on the local network (mDNS `_withrottle._tcp`, the `mdns-sd` crate, MIT/Apache) under
+  its name; `announce: false` or a failing announcement leaves it reachable by address and port.
+  `LEAH_TEST_PHONE_SERVER` (tests): any free port, never announced.
+- **Left for later (part 2, on #12):** the phones' advanced-consist commands (RC+, RC-, RCP, RCR, and
+  the RCD list), which need the consist object's add and remove as functions of their own; the
+  phones' own on-the-fly consists (several locomotives on one throttle) already work.
+- **Tests:** two phones in Rust driving a simulated base (the first lines, a roster locomotive's
+  labels and states, speed not echoed, latching and momentary keys, a question, a turnout with the
+  script's event, a bad address, quitting), a second phone hearing the first's and the script's
+  changes and the heartbeat's stop, the truth told (a capped speed, the script's power and heartbeat,
+  a locomotive let go of and taken again, a separator in a roster name), and the sample app on the
+  hidden screen. Reviewed (`/code-review high`): its ten findings fixed before the first commit.
+
 ## Decided: no BiDiB (the owner, 2026-11-11)
 
 BiDiB's specification is free but supervised: the working group must be told before anything is

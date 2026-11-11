@@ -11,7 +11,7 @@ signal back); locomotives with 14, 28, or 128 speed steps, speed limits, and mom
 reading, writing, identifying, resetting, and unlocking decoders on the programming track and on the
 main; decoder definitions and the `decoder_programmer`; the `roster`; consists, software and
 advanced. The samples in `examples/`: a throttle, a game pad throttle, the decoder workshop, a bench
-tester, and a simulator. **Next (Phase B):** a server for phone throttle apps (`design/model_railroading.md`).
+tester, and a simulator. **Phase B, begun:** the phone throttle server, for phone apps that work with WiThrottle (Engine Driver and others; `examples/phone_server.leah`); next, the phones' advanced consists, then the rest of Phase B (`design/model_railroading.md`).
 
 **Documentation:** <https://github.com/bmasters-dev/model-railroading/wiki>, published from `docs/`
 by `tools/docs.py`.

@@ -89,6 +89,16 @@ $icons["consist"] = function() {
     }
     ic.fill(0, 14.5, 16, 1, ic.edge)
 }
+` A phone throttle server: a phone with a speed slider on its screen, and the Wi-Fi's waves beside it.
+$icons["phone_throttle_server"] = function() {
+    ic.rbox(0.5, 1, 8.5, 14.5, ic.face, ic.edge, 1.5)
+    ic.fill(2, 3, 5.5, 9.5, ic.soft)
+    ic.fill(4.25, 4, 1, 7.5, ic.mid)
+    ic.rfill(3, 6.5, 3.5, 1.5, ic.accent, 0.5)
+    ic.fill(3.75, 13.5, 2, 1, ic.edge)
+    ic.arc(10, 8, 2.5, -50, 50, ic.green, 1.2)
+    ic.arc(10, 8, 5, -50, 50, ic.green, 1.2)
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)

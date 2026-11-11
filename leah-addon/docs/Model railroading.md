@@ -70,6 +70,7 @@ The motor shield's **B** screws are the **programming track**: a piece of track 
 | [consist](ref:consist) | Several locomotives run as one train: by Leah, or by the decoders' own consist address |
 | [roster](ref:roster) | A record of each locomotive, kept in a file |
 | [roster_entry](ref:roster_entry) | One locomotive's record: its names, address, decoder settings, function labels, and more |
+| [phone_throttle_server](ref:phone_throttle_server) | Phone throttle apps that work with WiThrottle (Engine Driver, WiThrottle) driving the locomotives over the Wi-Fi |
 | [Decoder functions](ref:Decoder functions) | A decoder's maker, its configuration (CV 29) by name, and its definitions |
 | [DCC board functions](ref:DCC board functions) | The boards plugged in, and loading Leah's programs onto them |
 | [dcc_program_job](ref:dcc_program_job) | A program being loaded onto a board |
@@ -86,6 +87,8 @@ The example app `gamepad_throttle.leah` drives a locomotive with a game pad: the
 
 The example app `decoder_workshop.leah` shows every setting of a decoder by name, reads and writes them, and keeps them in the roster.
 
+The example app `phone_server.leah` lets phones drive the locomotives: phone throttle apps that work with WiThrottle, such as Engine Driver, list it by its name on the Wi-Fi. It shows the phones connected and how many locomotives each holds, switches the track power, has two turnouts the phones can throw too, and starts a fast clock the phones show.
+
 ## See also
 
-[Addons](ref:Addons), [dcc_base](ref:dcc_base), [locomotive](ref:locomotive), [decoder_definition](ref:decoder_definition), [decoder_programmer](ref:decoder_programmer), [consist](ref:consist), [roster](ref:roster), [roster_entry](ref:roster_entry), [Decoder functions](ref:Decoder functions), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job)
+[Addons](ref:Addons), [dcc_base](ref:dcc_base), [locomotive](ref:locomotive), [decoder_definition](ref:decoder_definition), [decoder_programmer](ref:decoder_programmer), [consist](ref:consist), [roster](ref:roster), [roster_entry](ref:roster_entry), [phone_throttle_server](ref:phone_throttle_server), [Decoder functions](ref:Decoder functions), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job)

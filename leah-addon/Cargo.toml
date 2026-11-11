@@ -3,7 +3,7 @@
 #     leah --install-addon https://github.com/bmasters-dev/model-railroading
 [package]
 name = "leah-addon-model-railroading"
-version = "0.12.0"
+version = "0.13.0"
 license = "MIT OR Apache-2.0"
 edition = "2024"
 
@@ -19,3 +19,5 @@ crate-type = ["cdylib"]
 leah-addon-kit = { path = "../../Leah_Dev/kit" }
 # The boards' serial ports (termios, poll, access).
 libc = "0.2"
+# The phone throttle server announced on the local network (mDNS, so phones list it by name).
+mdns-sd = "=0.21.6"

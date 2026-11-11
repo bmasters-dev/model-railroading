@@ -74,6 +74,8 @@ pub struct DccBase {
     lost: RefCell<Option<String>>,
     /// Its events (`on_read`), fired from a reading's thread.
     events: Option<Events>,
+    /// The phone throttle servers driving it, told when a locomotive changes (phone.rs).
+    pub(crate) phone_servers: RefCell<Vec<Weak<crate::phone::PhoneServer>>>,
 }
 
 thread_local! {
@@ -171,6 +173,7 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
         limit: Cell::new(DEFAULT_LIMIT),
         lost: RefCell::new(None),
         events: None,
+        phone_servers: RefCell::new(Vec::new()),
     };
     if simulate {
         if !call.args.is_empty() || reader_port.is_some() {
@@ -203,6 +206,13 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
 }
 
 impl DccBase {
+    /// The track power as it is now: kept, and the phone throttle servers told when it changed.
+    fn power_now(&self, on: bool) {
+        if self.power.replace(on) != on {
+            crate::phone::power_changed(self, on);
+        }
+    }
+
     fn simulated(&self) -> bool {
         self.port.is_none()
     }
@@ -250,10 +260,10 @@ impl DccBase {
         for line in said {
             if line.starts_with("OFF reading a setting") {
                 // (Reading turns the main track off by design, as read_cv() says: no warning.)
-                self.power.set(false);
+                self.power_now(false);
                 self.current.set(0);
             } else if line.starts_with("OFF ") {
-                self.power.set(false);
+                self.power_now(false);
                 self.current.set(0);
                 call.warn(format!("the base station turned the track power off by itself: {}", line.trim_start_matches("OFF ")));
             } else {
@@ -286,7 +296,7 @@ impl DccBase {
             // (It started again by itself, a brown-out or a reset: its power is off and its table and
             // limit are its first ones. They are sent again; the power stays off until the script
             // turns it on.)
-            self.power.set(false);
+            self.power_now(false);
             self.current.set(0);
             let mut lines = vec![format!("L {}", self.limit.get())];
             lines.extend(self.kept.borrow().iter().map(|(place, packet)| format!("K {place} {}", dcc::hex(packet))));
@@ -300,7 +310,7 @@ impl DccBase {
         if let Some(gone) = gone
             && self.lost.borrow().is_none()
         {
-            self.power.set(false);
+            self.power_now(false);
             *self.lost.borrow_mut() = Some(gone);
         }
     }
@@ -478,7 +488,7 @@ impl DccBase {
         let Some(events) = self.events.clone() else { return };
         events.keep_running(true);
         // (The main track's power goes off for the reading, as the board says in its "OFF" line.)
-        self.power.set(false);
+        self.power_now(false);
         self.current.set(0);
         std::thread::spawn(move || {
             let done = read(&turn);
@@ -496,21 +506,21 @@ impl DccBase {
     }
 
     /// The locomotives the script holds on this base station, in the order made.
-    fn live_locomotives(&self) -> Vec<Rc<Locomotive>> {
+    pub(crate) fn live_locomotives(&self) -> Vec<Rc<Locomotive>> {
         self.locomotives.borrow().iter().filter_map(Weak::upgrade).collect()
     }
 
     /// As a reading starts on a thread of its own: the main track's power goes off for it, as the
     /// board says in its "OFF" line.
     pub(crate) fn reading_starts(&self) {
-        self.power.set(false);
+        self.power_now(false);
         self.current.set(0);
     }
 
     /// After a reading on the script's thread: the main track's power was turned off by it.
     pub(crate) fn after_reading(&self, call: &Call) {
         self.take_heard(call);
-        self.power.set(false);
+        self.power_now(false);
         self.current.set(0);
     }
 
@@ -518,7 +528,7 @@ impl DccBase {
         if let Some(link) = self.link.borrow_mut().take() {
             link.close();
         }
-        self.power.set(false);
+        self.power_now(false);
     }
 }
 
@@ -571,7 +581,7 @@ impl Object for DccBase {
                         }
                     }
                     self.current.set(0);
-                    self.power.set(on);
+                    self.power_now(on);
                     Ok(())
                 }
                 other => Err(Error::type_error(format!("a dcc_base's `power` is true or false, not {}", describe(&other)))),
@@ -603,10 +613,12 @@ impl Object for DccBase {
                     if self.lost.borrow().is_some() || self.link.borrow().is_none() {
                         // (A board out of reach sends nothing: its power is off, or its safety turns it
                         // off within 3 seconds. The locomotives are stopped here all the same.)
-                        for loco in self.locomotives.borrow().iter().filter_map(Weak::upgrade) {
+                        for loco in self.live_locomotives() {
                             loco.speed.set(0);
+                            // (The script and the phones told, as when the stop is sent.)
+                            loco.changed(call);
                         }
-                        self.power.set(false);
+                        self.power_now(false);
                         return Ok(Value::Null);
                     }
                 }
@@ -1100,28 +1112,44 @@ pub fn new_locomotive(call: &mut Call) -> Result<Value, Error> {
         None => (address_of("locomotive", call.arg(0), long)?, long),
     };
     let steps = match call.option("speed_steps") {
-        None => match data.as_ref().and_then(|e| e.cv(29)) {
-            Some(c) if c & 0x02 == 0 => 14,
-            _ => 128,
-        },
+        None => None,
         Some(v) => match v.as_int() {
-            Some(n @ (14 | 28 | 128)) => n as u8,
+            Some(n @ (14 | 28 | 128)) => Some(n as u8),
             _ => return Err(Error::range_error(format!("locomotive()'s `speed_steps:` is 14, 28, or 128, as its decoder is set (CV 29), not {}", describe(v))).at(call.option_line("speed_steps"))),
         },
     };
-    let top = top_step(steps);
-    let speed_limit = match &data {
-        // (The roster's limit is in 126 steps; in fewer steps, the step at or above it.)
-        Some(e) => ((u32::from(e.speed_limit) * u32::from(top)).div_ceil(126)).clamp(1, u32::from(top)) as u8,
-        None => top,
-    };
-    let momentary: std::collections::BTreeSet<u8> = data.as_ref().map(|e| e.functions.iter().filter(|(_, (_, m))| *m).map(|(n, _)| *n).collect()).unwrap_or_default();
-    let labels: BTreeMap<u8, String> = data.as_ref().map(|e| e.functions.iter().filter(|(_, (l, _))| !l.is_empty()).map(|(n, (l, _))| (*n, l.clone())).collect()).unwrap_or_default();
+    let made = from_entry(data.as_ref(), steps);
     let base = match base.or_else(|| LAST.with(|l| l.borrow().upgrade())) {
         Some(b) => b,
         None => return Err(hardware("locomotive(): there is no base station: make one first, dcc_base(\"/dev/ttyACM0\") or dcc_base(simulate: true)")),
     };
-    Ok(make_locomotive(call, &base, address, long, steps, speed_limit, momentary, labels, entry).0)
+    Ok(make_locomotive(call, &base, address, long, made.steps, made.speed_limit, made.momentary, made.labels, entry).0)
+}
+
+/// What a locomotive takes from its roster entry, when it has one: its speed steps (from its kept
+/// CV 29, unless `steps` says), its speed limit in its own steps, its momentary keys, and its keys'
+/// labels. The script's `locomotive()` and the phone throttle server make theirs alike with it.
+pub(crate) struct FromEntry {
+    pub steps: u8,
+    pub speed_limit: u8,
+    pub momentary: std::collections::BTreeSet<u8>,
+    pub labels: BTreeMap<u8, String>,
+}
+
+pub(crate) fn from_entry(data: Option<&crate::roster::EntryData>, steps: Option<u8>) -> FromEntry {
+    let steps = steps.unwrap_or(match data.and_then(|e| e.cv(29)) {
+        Some(c) if c & 0x02 == 0 => 14,
+        _ => 128,
+    });
+    let top = top_step(steps);
+    let speed_limit = match data {
+        // (The roster's limit is in 126 steps; in fewer steps, the step at or above it.)
+        Some(e) => ((u32::from(e.speed_limit) * u32::from(top)).div_ceil(126)).clamp(1, u32::from(top)) as u8,
+        None => top,
+    };
+    let momentary = data.map(|e| e.functions.iter().filter(|(_, (_, m))| *m).map(|(n, _)| *n).collect()).unwrap_or_default();
+    let labels = data.map(|e| e.functions.iter().filter(|(_, (l, _))| !l.is_empty()).map(|(n, (l, _))| (*n, l.clone())).collect()).unwrap_or_default();
+    FromEntry { steps, speed_limit, momentary, labels }
 }
 
 /// A locomotive made and kept on its base station (its refresh places, its place in the base's list):
@@ -1175,7 +1203,7 @@ impl Drop for Locomotive {
 }
 
 /// The top speed step of a decoder's speed steps.
-fn top_step(steps: u8) -> u8 {
+pub(crate) fn top_step(steps: u8) -> u8 {
     match steps {
         14 => 14,
         28 => 28,
@@ -1186,9 +1214,11 @@ fn top_step(steps: u8) -> u8 {
 impl Locomotive {
     /// Tells the script's `on_locomotive_changed` this locomotive changed.
     fn changed(&self, call: &mut Call) {
-        let Some(events) = self.base.events.clone() else { return };
         let me = self.base.locomotives.borrow().iter().filter_map(Weak::upgrade).find(|l| std::ptr::eq(Rc::as_ptr(l), self));
-        if let Some(me) = me {
+        let Some(me) = me else { return };
+        // (Phones holding it hear of it: phone.rs.)
+        crate::phone::locomotive_changed(&self.base, &me);
+        if let Some(events) = self.base.events.clone() {
             events.fire("on_locomotive_changed", vec![call.object_value(&me)]);
         }
     }
@@ -1293,6 +1323,33 @@ impl Locomotive {
 
     pub(crate) fn address(&self) -> u16 {
         self.address
+    }
+
+    /// Its speed in 126 steps, whatever its own (what a phone throttle shows).
+    pub(crate) fn speed_126(&self) -> u8 {
+        let top = u32::from(top_step(self.steps));
+        ((u32::from(self.speed.get()) * 126 + top / 2) / top) as u8
+    }
+
+    pub(crate) fn is_forward(&self) -> bool {
+        self.forward.get()
+    }
+
+    pub(crate) fn function_on(&self, n: usize) -> bool {
+        self.functions.get().get(n).copied().unwrap_or(false)
+    }
+
+    pub(crate) fn steps(&self) -> u8 {
+        self.steps
+    }
+
+    /// Its keys' labels (from its roster entry), by function number.
+    pub(crate) fn key_labels(&self) -> BTreeMap<u8, String> {
+        self.labels.borrow().clone()
+    }
+
+    pub(crate) fn is_momentary(&self, n: usize) -> bool {
+        self.momentary.borrow().contains(&(n as u8))
     }
 
     pub(crate) fn is_long(&self) -> bool {
