@@ -418,6 +418,26 @@ and physics data per entry, the roster on the web, exporting to a command statio
 the CVs. The decoder workshop got a Roster row: Save to roster (the decoder's CVs, definition, and
 address under a name) and Load (a saved locomotive's settings back, loaded, to Write all).
 
+## Phase A, item 6: throttle extras (built 2026-11-11, model-railroading#10)
+
+`locomotive(..., speed_steps: 128 | 28 | 14)` (from a roster entry: 14 when its kept CV 29 says so):
+`speed` counts in the locomotive's own steps; 28 and 14 go in S-9.2's basic packet `01DCSSSS` (28:
+step n sent as n + 3 over SSSS and C; 14: SSSS = n + 1 and C the headlight, so F0 changes resend the
+speed packet). The simulated decoder reads basic packets by its own CV 29 bit 1, as a decoder does,
+and `decoder()` says `speed_steps`; a basic stop or emergency stop leaves the direction as it was.
+`speed_percent` (0 to 100), `speed_limit` (in the locomotive's steps; a roster entry's limit is in 126
+steps, scaled up), `momentary`, `labels`, `entry`, `press_function`/`release_function` (momentary:
+on while held; latching: toggles). The base: `locomotives`, `stop_all()`, `on_locomotive_changed`
+(every change of speed, direction, or function). The throttle example: a Roster list (address,
+labels, momentary keys as plain buttons held, the limit), keyboard driving (Up/Down, Page Up/Down,
+Space, Left/Right, 0 to 9 as F0 to F9, each digit taken once until let go), and Stop now tells the
+locomotive (setting a slider from the script doesn't run its event: Stop had only moved the slider).
+`examples/gamepad_throttle.leah` on the gui addon's `game_controller` (the stick changes speed at a
+rate; a pad that goes stops the locomotive; the horn momentary for a locomotive without an entry),
+on the simulated base too; tested with a recorded pad (`LEAH_TEST_GAMEPAD`, each event's time from the
+start). Later, as people ask: several throttles in a window, saved throttle layouts, a centre-off
+shunting slider.
+
 ## Decided: no BiDiB (the owner, 2026-11-11)
 
 BiDiB's specification is free but supervised: the working group must be told before anything is

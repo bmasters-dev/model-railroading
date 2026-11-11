@@ -15,10 +15,10 @@ use crate::board::{self, Link, Timing};
 use crate::dcc::{self, DecoderState, Reader, Target};
 use crate::makers;
 
-const BASE_PROPS: &[&str] = &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"];
-const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit", "identify_decoder", "reset_decoder", "find_decoder_locks", "unlock_decoder", "lock_decoder"];
-const LOCO_PROPS: &[&str] = &["address", "long", "base", "speed", "direction"];
-const LOCO_FUNCS: &[&str] = &["set_function", "function", "stop", "emergency_stop", "write_cv", "write_cv_bit"];
+const BASE_PROPS: &[&str] = &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit", "locomotives"];
+const BASE_FUNCS: &[&str] = &["emergency_stop", "stop_all", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit", "identify_decoder", "reset_decoder", "find_decoder_locks", "unlock_decoder", "lock_decoder"];
+const LOCO_PROPS: &[&str] = &["address", "long", "base", "speed", "direction", "speed_steps", "speed_percent", "speed_limit", "momentary", "labels", "entry"];
+const LOCO_FUNCS: &[&str] = &["set_function", "function", "press_function", "release_function", "stop", "emergency_stop", "write_cv", "write_cv_bit"];
 /// The least time between two writes on the main to one locomotive, unless `pause:` says otherwise:
 /// some decoders miss a write that comes too soon after the last.
 const WRITE_PAUSE_MS: i64 = 500;
@@ -485,6 +485,11 @@ impl DccBase {
         });
     }
 
+    /// The locomotives the script holds on this base station, in the order made.
+    fn live_locomotives(&self) -> Vec<Rc<Locomotive>> {
+        self.locomotives.borrow().iter().filter_map(Weak::upgrade).collect()
+    }
+
     /// As a reading starts on a thread of its own: the main track's power goes off for it, as the
     /// board says in its "OFF" line.
     pub(crate) fn reading_starts(&self) {
@@ -530,6 +535,10 @@ impl Object for DccBase {
             "shield" => Ok(self.shield.get().into()),
             "current" => Ok(if self.shield.get() { Value::from(if self.power.get() { self.current.get() } else { 0 }) } else { Value::Null }),
             "current_limit" => Ok(self.limit.get().into()),
+            "locomotives" => {
+                let all = self.live_locomotives();
+                Ok(Value::list(all.iter().map(|l| call.object_value(l))))
+            }
             other => Err(call.unknown_property("dcc_base", other, BASE_PROPS)),
         }
     }
@@ -592,13 +601,25 @@ impl Object for DccBase {
                     }
                 }
                 self.send(dcc::broadcast_emergency_stop(), "every locomotive: emergency stop".to_string(), None, call)?;
-                for loco in self.locomotives.borrow().iter().filter_map(Weak::upgrade) {
+                for loco in self.live_locomotives() {
                     loco.speed.set(0);
                     // (On a board each locomotive's kept speed becomes its emergency stop too, or the
                     // refresh table would start it again.)
                     if !self.simulated() {
                         loco.send_speed(true, call)?;
                     }
+                    loco.changed(call);
+                }
+                Ok(Value::Null)
+            }
+            // (Every locomotive stopped as its decoder eases it, as each one's stop() does.)
+            "stop_all" => {
+                call.count_between(0, 0)?;
+                call.only_options(&[])?;
+                for loco in self.live_locomotives() {
+                    loco.speed.set(0);
+                    loco.send_speed(false, call)?;
+                    loco.changed(call);
                 }
                 Ok(Value::Null)
             }
@@ -991,6 +1012,7 @@ fn decoder_value(address: u16, long: bool, state: &DecoderState) -> Value {
         ("address", Value::from(i64::from(address))),
         ("long", Value::from(long)),
         ("speed", Value::from(i64::from(state.speed))),
+        ("speed_steps", Value::from(i64::from(state.steps))),
         ("direction", Value::from(if state.forward { "forward" } else { "reverse" })),
         ("functions", Value::list(state.functions.iter().map(|on| Value::from(*on)))),
         ("packets", Value::from(state.heard as i64)),
@@ -1029,12 +1051,20 @@ pub struct Locomotive {
     lights_place: Option<u8>,
     /// When the last write on the main to it went out.
     last_write: Cell<Option<std::time::Instant>>,
+    /// Its decoder's speed steps (128, 28, or 14), and the fastest step it may be given.
+    steps: u8,
+    speed_limit: Cell<u8>,
+    /// The functions on only while pressed, and the labels of its keys (from its roster entry).
+    momentary: RefCell<std::collections::BTreeSet<u8>>,
+    labels: RefCell<BTreeMap<u8, String>>,
+    /// The roster entry it was made from.
+    entry: Option<Rc<crate::roster::RosterEntry>>,
 }
 
 /// `locomotive($address, long: false, base: ...)`.
 pub fn new_locomotive(call: &mut Call) -> Result<Value, Error> {
     call.count_between(1, 1)?;
-    call.only_options(&["long", "base"])?;
+    call.only_options(&["long", "base", "speed_steps"])?;
     let long = bool_option(call, "long", false)?;
     let base = match call.option("base") {
         None => None,
@@ -1043,23 +1073,61 @@ pub fn new_locomotive(call: &mut Call) -> Result<Value, Error> {
             None => return Err(Error::type_error(format!("locomotive()'s `base:` is a dcc_base, not {}", describe(v))).at(call.option_line("base"))),
         },
     };
-    // (A roster entry: its address, and whether it is long.)
-    let (address, long) = match call.own::<crate::roster::RosterEntry>(0) {
-        Some(entry) => {
+    // (A roster entry: its address, whether it is long, its keys' labels and momentary ones, its
+    // speed limit, and its speed steps when its CV 29 is kept (bit 1 clear: 14).)
+    let entry = call.own::<crate::roster::RosterEntry>(0);
+    let data = match &entry {
+        Some(e) => {
             if call.option("long").is_some() {
                 return Err(Error::type_error("locomotive(): a roster entry says whether its address is long: no `long:`").at(call.option_line("long")));
             }
-            let e = entry.data()?;
-            (e.address, e.long)
+            Some(e.data()?)
         }
+        None => None,
+    };
+    let (address, long) = match &data {
+        Some(e) => (e.address, e.long),
         None => (address_of("locomotive", call.arg(0), long)?, long),
     };
+    let steps = match call.option("speed_steps") {
+        None => match data.as_ref().and_then(|e| e.cv(29)) {
+            Some(c) if c & 0x02 == 0 => 14,
+            _ => 128,
+        },
+        Some(v) => match v.as_int() {
+            Some(n @ (14 | 28 | 128)) => n as u8,
+            _ => return Err(Error::range_error(format!("locomotive()'s `speed_steps:` is 14, 28, or 128, as its decoder is set (CV 29), not {}", describe(v))).at(call.option_line("speed_steps"))),
+        },
+    };
+    let top = top_step(steps);
+    let speed_limit = match &data {
+        // (The roster's limit is in 126 steps; in fewer steps, the step at or above it.)
+        Some(e) => ((u32::from(e.speed_limit) * u32::from(top)).div_ceil(126)).clamp(1, u32::from(top)) as u8,
+        None => top,
+    };
+    let momentary: std::collections::BTreeSet<u8> = data.as_ref().map(|e| e.functions.iter().filter(|(_, (_, m))| *m).map(|(n, _)| *n).collect()).unwrap_or_default();
+    let labels: BTreeMap<u8, String> = data.as_ref().map(|e| e.functions.iter().filter(|(_, (l, _))| !l.is_empty()).map(|(n, (l, _))| (*n, l.clone())).collect()).unwrap_or_default();
     let base = match base.or_else(|| LAST.with(|l| l.borrow().upgrade())) {
         Some(b) => b,
         None => return Err(hardware("locomotive(): there is no base station: make one first, dcc_base(\"/dev/ttyACM0\") or dcc_base(simulate: true)")),
     };
     let (speed_place, lights_place) = if base.simulated() { (None, None) } else { base.places_for(address, long, call) };
-    let value = call.new_object(Locomotive { base: base.clone(), address, long, speed: Cell::new(0), forward: Cell::new(true), functions: Cell::new([false; dcc::FUNCTIONS]), speed_place, lights_place, last_write: Cell::new(None) });
+    let value = call.new_object(Locomotive {
+        base: base.clone(),
+        address,
+        long,
+        speed: Cell::new(0),
+        forward: Cell::new(true),
+        functions: Cell::new([false; dcc::FUNCTIONS]),
+        speed_place,
+        lights_place,
+        last_write: Cell::new(None),
+        steps,
+        speed_limit: Cell::new(speed_limit),
+        momentary: RefCell::new(momentary),
+        labels: RefCell::new(labels),
+        entry,
+    });
     if let Some(loco) = call.own_value::<Locomotive>(&value) {
         let mut kept = base.locomotives.borrow_mut();
         kept.retain(|w| w.strong_count() > 0);
@@ -1078,7 +1146,38 @@ impl Drop for Locomotive {
     }
 }
 
+/// The top speed step of a decoder's speed steps.
+fn top_step(steps: u8) -> u8 {
+    match steps {
+        14 => 14,
+        28 => 28,
+        _ => 126,
+    }
+}
+
 impl Locomotive {
+    /// Tells the script's `on_locomotive_changed` this locomotive changed.
+    fn changed(&self, call: &mut Call) {
+        let Some(events) = self.base.events.clone() else { return };
+        let me = self.base.locomotives.borrow().iter().filter_map(Weak::upgrade).find(|l| std::ptr::eq(Rc::as_ptr(l), self));
+        if let Some(me) = me {
+            events.fire("on_locomotive_changed", vec![call.object_value(&me)]);
+        }
+    }
+
+    /// Sets a function and sends it (in 14 steps F0 goes in the speed packet too).
+    fn turn_function(&self, n: usize, on: bool, call: &mut Call) -> Result<(), Error> {
+        let mut all = self.functions.get();
+        all[n] = on;
+        self.functions.set(all);
+        self.send_functions(dcc::group_of(n), call)?;
+        if n == 0 && self.steps == 14 {
+            self.send_speed(false, call)?;
+        }
+        self.changed(call);
+        Ok(())
+    }
+
     fn name(&self) -> String {
         if self.long && self.address <= dcc::SHORT_MOST { format!("locomotive {} (long)", self.address) } else { format!("locomotive {}", self.address) }
     }
@@ -1092,7 +1191,11 @@ impl Locomotive {
             format!("speed {}", self.speed.get())
         };
         let direction = if self.forward.get() { "forward" } else { "reverse" };
-        let packet = dcc::speed_128(self.address, self.long, self.speed.get(), self.forward.get(), emergency);
+        let packet = if self.steps == 128 {
+            dcc::speed_128(self.address, self.long, self.speed.get(), self.forward.get(), emergency)
+        } else {
+            dcc::speed_basic(self.address, self.long, self.speed.get(), self.forward.get(), emergency, self.steps, self.functions.get()[0])
+        };
         self.base.send(packet, format!("{}: {words}, {direction}", self.name()), self.speed_place, call)
     }
 
@@ -1166,19 +1269,69 @@ impl Object for Locomotive {
             "base" => Ok(call.object_value(&self.base)),
             "speed" => Ok(i64::from(self.speed.get()).into()),
             "direction" => Ok(if self.forward.get() { "forward" } else { "reverse" }.into()),
+            "speed_steps" => Ok(i64::from(self.steps).into()),
+            "speed_percent" => {
+                let top = i64::from(top_step(self.steps));
+                Ok(((i64::from(self.speed.get()) * 100 + top / 2) / top).into())
+            }
+            "speed_limit" => Ok(i64::from(self.speed_limit.get()).into()),
+            "momentary" => Ok(Value::list(self.momentary.borrow().iter().map(|n| Value::from(i64::from(*n))))),
+            "labels" => Ok(Value::map(self.labels.borrow().iter().map(|(n, l)| (leah_addon_kit::Key::Int(i64::from(*n)), Value::from(l.as_str()))))),
+            "entry" => Ok(match &self.entry {
+                Some(e) => call.object_value(e),
+                None => Value::Null,
+            }),
             other => Err(call.unknown_property("locomotive", other, LOCO_PROPS)),
         }
     }
 
     fn set(&self, property: &str, value: Value, call: &mut Call) -> Result<(), Error> {
         match property {
-            "speed" => {
-                let n = value.as_int().ok_or_else(|| Error::type_error(format!("a locomotive's `speed` is a whole number from 0 to 126, not {}", describe(&value))))?;
-                if !(0..=126).contains(&n) {
-                    return Err(Error::range_error(format!("a locomotive's `speed` is 0 to 126 (the 128 speed steps), not {n}")));
+            "speed" | "speed_percent" => {
+                let top = i64::from(top_step(self.steps));
+                let most = if property == "speed" { top } else { 100 };
+                let n = value.as_int().ok_or_else(|| Error::type_error(format!("a locomotive's `{property}` is a whole number from 0 to {most}, not {}", describe(&value))))?;
+                if !(0..=most).contains(&n) {
+                    return Err(Error::range_error(if property == "speed" {
+                        format!("a locomotive's `speed` is 0 to {top} (its {} speed steps), not {n}", self.steps)
+                    } else {
+                        format!("a locomotive's `speed_percent` is 0 to 100, not {n}")
+                    }));
                 }
-                self.speed.set(n as u8);
-                self.send_speed(false, call)
+                let step = if property == "speed" { n } else { (n * top + 50) / 100 };
+                // (Never past its speed limit.)
+                self.speed.set((step as u8).min(self.speed_limit.get()));
+                self.send_speed(false, call)?;
+                self.changed(call);
+                Ok(())
+            }
+            "speed_limit" => {
+                let top = top_step(self.steps);
+                match value.as_int() {
+                    Some(n) if (1..=i64::from(top)).contains(&n) => {
+                        self.speed_limit.set(n as u8);
+                        if self.speed.get() > n as u8 {
+                            self.speed.set(n as u8);
+                            self.send_speed(false, call)?;
+                            self.changed(call);
+                        }
+                        Ok(())
+                    }
+                    _ => Err(Error::range_error(format!("a locomotive's `speed_limit` is a speed step, 1 to {top}, not {}", describe(&value)))),
+                }
+            }
+            "momentary" => {
+                let items: Vec<Value> = match &value {
+                    Value::Array(items) => items.iter().map(|(_, v)| v.clone()).collect(),
+                    Value::Null => Vec::new(),
+                    other => return Err(Error::type_error(format!("a locomotive's `momentary` is a list of function numbers, not {}", describe(other)))),
+                };
+                let mut set = std::collections::BTreeSet::new();
+                for v in items {
+                    set.insert(function_number("a locomotive's `momentary`", &v)? as u8);
+                }
+                *self.momentary.borrow_mut() = set;
+                Ok(())
             }
             "direction" => {
                 let forward = match value.as_text() {
@@ -1187,9 +1340,11 @@ impl Object for Locomotive {
                     _ => return Err(Error::type_error(format!("a locomotive's `direction` is \"forward\" or \"reverse\", not {}", describe(&value)))),
                 };
                 self.forward.set(forward);
-                self.send_speed(false, call)
+                self.send_speed(false, call)?;
+                self.changed(call);
+                Ok(())
             }
-            "address" | "long" | "base" => Err(Error::type_error(format!("a locomotive's `{property}` can be read but not set"))),
+            "speed_steps" | "labels" | "entry" | "address" | "long" | "base" => Err(Error::type_error(format!("a locomotive's `{property}` can be read but not set"))),
             other => Err(call.unknown_property("locomotive", other, LOCO_PROPS)),
         }
     }
@@ -1202,10 +1357,23 @@ impl Object for Locomotive {
                 call.only_options(&[])?;
                 let n = function_number(&what, call.arg(0))?;
                 let on = call.arg(1).as_bool().ok_or_else(|| Error::type_error(format!("{what}(): on or off is true or false, not {}", describe(call.arg(1)))))?;
-                let mut all = self.functions.get();
-                all[n] = on;
-                self.functions.set(all);
-                self.send_functions(dcc::group_of(n), call)?;
+                self.turn_function(n, on, call)?;
+                Ok(Value::Null)
+            }
+            // (A key pressed and let go of: a momentary function is on only while pressed; a
+            // latching one turns on or off at each press.)
+            "press_function" | "release_function" => {
+                call.count_between(1, 1)?;
+                call.only_options(&[])?;
+                let n = function_number(&what, call.arg(0))?;
+                let momentary = self.momentary.borrow().contains(&(n as u8));
+                let now = self.functions.get()[n];
+                match (function == "press_function", momentary) {
+                    (true, true) => self.turn_function(n, true, call)?,
+                    (true, false) => self.turn_function(n, !now, call)?,
+                    (false, true) => self.turn_function(n, false, call)?,
+                    (false, false) => {}
+                }
                 Ok(Value::Null)
             }
             "function" => {
@@ -1219,6 +1387,7 @@ impl Object for Locomotive {
                 call.only_options(&[])?;
                 self.speed.set(0);
                 self.send_speed(function == "emergency_stop", call)?;
+                self.changed(call);
                 Ok(Value::Null)
             }
             "write_cv" | "write_cv_bit" => {

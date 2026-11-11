@@ -3,13 +3,18 @@
 ` the shield's A screws (design/model_railroading.md). Choose the locomotive's address, or read it
 ` with the locomotive on the programming track (the B screws), connect, turn the track power on, and
 ` drive: the speed, the direction, Stop (eased by the decoder), Emergency stop (at once; also the
-` Escape key), and the functions F0 to F12.
+` Escape key), and the functions F0 to F12. Or pick a locomotive from the roster (the decoder
+` workshop saves them): its address, its keys' labels, its momentary keys (on only while held),
+` and its speed limit come with it. Keys: Up and Down change the speed by a step, Page Up and Page
+` Down by ten, Space stops, Left and Right change direction, 0 to 9 are F0 to F9.
 
 $base = null
 $loco = null
+$roster = roster()
+$picked = null
 $speed_shown = -1
 
-$win = window(title: "DCC throttle", width: 800, height: 680, minimum_width: 740, minimum_height: 640)
+$win = window(title: "DCC throttle", width: 800, height: 720, minimum_width: 740, minimum_height: 680)
 
 ` -- the base station --
 $port_label = label(left: 20, top: 24, width: 110, text: "Base station:")
@@ -37,36 +42,45 @@ $read = button(left: 330, top: 110, width: 160, height: 34, text: "Read address"
 $win.add($read)
 $current = label(left: 510, top: 118, width: 270, lock_right: true, text: "")
 $win.add($current)
+$roster_label = label(left: 20, top: 162, width: 70, text: "Roster:")
+$win.add($roster_label)
+$roster_pick = popup_menu(left: 90, top: 158, width: 300, tooltip: "A locomotive saved in the roster (the decoder workshop saves them)")
+$roster_pick.add_row("(none: the address above)", tag: "")
+foreach $roster.names as $n {
+    $roster_pick.add_row($n, tag: $n)
+}
+$roster_pick.selected_row_index = 0
+$win.add($roster_pick)
 
 ` -- driving --
-$speed_label = label(left: 20, top: 170, width: 300, text: "Speed 0 of 126")
+$speed_label = label(left: 20, top: 210, width: 300, text: "Speed 0 of 126")
 $win.add($speed_label)
-$throttle = slider(left: 20, top: 196, width: 740, minimum_value: 0, maximum_value: 126, lock_right: true, enabled: false)
+$throttle = slider(left: 20, top: 236, width: 740, minimum_value: 0, maximum_value: 126, lock_right: true, enabled: false)
 $win.add($throttle)
-$direction = segmented_button(left: 20, top: 244, width: 240, enabled: false)
+$direction = segmented_button(left: 20, top: 284, width: 240, enabled: false)
 $forward = $direction.add_segment("Forward", tag: "forward")
 $direction.add_segment("Reverse", tag: "reverse")
 $win.add($direction)
 $forward.selected = true
-$stop = button(left: 280, top: 240, width: 150, height: 40, text: "Stop", enabled: false)
+$stop = button(left: 280, top: 280, width: 150, height: 40, text: "Stop", enabled: false)
 $win.add($stop)
-$emergency = button(left: 450, top: 240, width: 310, height: 40, text: "Emergency stop (Esc)", lock_right: true, enabled: false)
+$emergency = button(left: 450, top: 280, width: 310, height: 40, text: "Emergency stop (Esc)", lock_right: true, enabled: false)
 $win.add($emergency)
 
 ` -- the functions --
-$functions_box = group_box(left: 20, top: 300, width: 740, height: 150, text: "Functions", lock_right: true)
+$functions_box = group_box(left: 20, top: 340, width: 740, height: 150, text: "Functions", lock_right: true)
 $win.add($functions_box)
 $names = ["F0 Light", "F1 Bell", "F2 Horn", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]
 $function_buttons = []
 ` (What each function was last set to, so a click sends only the one that changed.)
 $function_states = [false, false, false, false, false, false, false, false, false, false, false, false, false]
 foreach $names as $n: $words {
-    $b = button(left: 36 + ($n mod 7) * 102, top: 330 + ($n div 7) * 52, width: 94, height: 40, text: $words, _
+    $b = button(left: 36 + ($n mod 7) * 102, top: 370 + ($n div 7) * 52, width: 94, height: 40, text: $words, _
         button_type: "toggle", enabled: false)
     $b.on_click = function() {
         global $loco, $function_buttons, $function_states
         foreach $function_buttons as $i: $fb {
-            if $function_states[$i] != $fb.value {
+            if $fb.button_type == "toggle" and $function_states[$i] != $fb.value {
                 $function_states[$i] = $fb.value
                 if $loco != null {
                     $loco.set_function($i, $fb.value)
@@ -74,36 +88,63 @@ foreach $names as $n: $words {
             }
         }
     }
+    ` (A momentary key, such as a horn: on while the button is held.)
+    $b.on_mouse_down = function($x, $y, $button, $held) {
+        global $loco
+        if $loco != null and $me.button_type == "normal" {
+            $loco.press_function($n)
+        }
+    }
+    $b.on_mouse_up = function($x, $y, $button, $held) {
+        global $loco
+        if $loco != null and $me.button_type == "normal" {
+            $loco.release_function($n)
+        }
+    }
     $win.add($b)
     $function_buttons[] = $b
 }
 
+` The keys' labels and kinds from the locomotive (its roster entry's), or the plain ones.
+function show_keys() {
+    global $loco, $function_buttons, $names, $function_states
+    foreach $function_buttons as $i: $b {
+        $label = if $loco != null and has_key($loco.labels, $i) then $loco.labels[$i] else null
+        $b.text = if $label == null then $names[$i] else "F" + $i + " " + $label
+        $momentary = $loco != null and contains($loco.momentary, $i)
+        $b.button_type = if $momentary then "normal" else "toggle"
+        if $momentary {
+            $function_states[$i] = false
+        }
+    }
+}
+
 ` -- the decoder's settings, on the programming track --
-$settings_box = group_box(left: 20, top: 462, width: 740, height: 76, text: "Decoder settings (on the programming track with the power off, or on the main)", lock_right: true)
+$settings_box = group_box(left: 20, top: 502, width: 740, height: 76, text: "Decoder settings (on the programming track with the power off, or on the main)", lock_right: true)
 $win.add($settings_box)
-$cv_label = label(left: 36, top: 496, width: 30, text: "CV")
+$cv_label = label(left: 36, top: 536, width: 30, text: "CV")
 $win.add($cv_label)
-$cv = text_field(left: 64, top: 492, width: 60, text: "3")
+$cv = text_field(left: 64, top: 532, width: 60, text: "3")
 $win.add($cv)
-$cv_arrows = up_down_arrows(left: 126, top: 492, minimum_value: 1, maximum_value: 1024, value: 3)
+$cv_arrows = up_down_arrows(left: 126, top: 532, minimum_value: 1, maximum_value: 1024, value: 3)
 $win.add($cv_arrows)
-$cv_name = label(left: 160, top: 496, width: 170, text: "")
+$cv_name = label(left: 160, top: 536, width: 170, text: "")
 $win.add($cv_name)
-$cv_value = text_field(left: 334, top: 492, width: 60, text: "", hint: "value")
+$cv_value = text_field(left: 334, top: 532, width: 60, text: "", hint: "value")
 $win.add($cv_value)
-$on_main = checkbox(left: 400, top: 494, text: "On the main", enabled: false, _
+$on_main = checkbox(left: 400, top: 534, text: "On the main", enabled: false, _
     tooltip: "Writes to the locomotive being driven, on the main track, with the power on (no reading back there)")
 $win.add($on_main)
-$cv_read = button(left: 520, top: 488, width: 100, height: 34, text: "Read", enabled: false)
+$cv_read = button(left: 520, top: 528, width: 100, height: 34, text: "Read", enabled: false)
 $win.add($cv_read)
-$cv_write = button(left: 630, top: 488, width: 112, height: 34, text: "Write", enabled: false, lock_left: false, lock_right: true)
+$cv_write = button(left: 630, top: 528, width: 112, height: 34, text: "Write", enabled: false, lock_left: false, lock_right: true)
 $win.add($cv_write)
 ` What the usual settings are (NMRA S-9.2.2).
 $cv_names = [1: "Short address", 2: "Start voltage", 3: "Acceleration", 4: "Deceleration", 5: "Top speed", _
     6: "Middle speed", 7: "Version (read only)", 8: "Maker (read only)", 17: "Long address, high", _
     18: "Long address, low", 19: "Consist address", 29: "Configuration"]
 
-$help = label(left: 20, top: 552, width: 740, height: 80, multi_line: true, lock_right: true, _
+$help = label(left: 20, top: 592, width: 740, height: 80, multi_line: true, lock_right: true, _
     text: "Stop slows the locomotive as its decoder is set to; Emergency stop (or Escape) stops every " _
     + "locomotive at once. Lifting a locomotive off the rails cuts its power too. The base station " _
     + "turns the power off by itself on a short, or if this app stops talking to it.")
@@ -159,7 +200,7 @@ function set_driving_enabled($on) {
 ` functions as the buttons show are sent at once (some decoders keep their headlight off until they
 ` have been told a direction).
 function take_locomotive() {
-    global $base, $loco, $address, $long, $throttle, $direction, $function_buttons, $status
+    global $base, $loco, $address, $long, $throttle, $direction, $function_buttons, $status, $picked, $roster
     if not is_digits(trim($address.text)) or to_number($address.text) < 1 or to_number($address.text) > 10239 {
         $status.text = "An address is a whole number from 1 to 10239."
         return
@@ -172,11 +213,16 @@ function take_locomotive() {
         $loco.speed = 0
     }
     $throttle.value = 0
-    $loco = locomotive($n, long: $long.value)
+    ` (The roster's locomotive when it is the one at this address: its labels, keys, and limit.)
+    $entry = if $picked == null then null else $roster.entry($picked)
+    $loco = if $entry != null and $entry.address == $n then locomotive($entry) else locomotive($n, long: $long.value)
+    $throttle.maximum_value = if $loco.speed_steps == 128 then 126 else $loco.speed_steps
+    show_keys()
+    show_speed()
     $loco.direction = $direction.selected_segment_tag ?? "forward"
     $loco.speed = 0
     foreach $function_buttons as $i: $b {
-        if $b.value {
+        if $b.button_type == "toggle" and $b.value {
             $loco.set_function($i, true)
         }
     }
@@ -376,12 +422,109 @@ $long.on_value_changed = function() {
     }
 }
 
-$throttle.on_value_changed = function() {
+` The speed shown: of the locomotive's own speed steps, and its limit when it has one.
+function show_speed() {
     global $loco, $throttle, $speed_label
+    $top = if $loco == null or $loco.speed_steps == 128 then 126 else $loco.speed_steps
+    $s = if $loco == null then round($throttle.value) else $loco.speed
+    $limit = if $loco != null and $loco.speed_limit < $top then " (its limit: " + $loco.speed_limit + ")" else ""
+    $speed_label.text = "Speed " + $s + " of " + $top + $limit
+}
+
+$throttle.on_value_changed = function() {
+    speed_from_slider()
+}
+
+` The locomotive's speed from the slider (also after a key moved it).
+function speed_from_slider() {
+    global $loco, $throttle
     $s = round($throttle.value)
-    $speed_label.text = "Speed " + $s + " of 126"
     if $loco != null and $loco.speed != $s {
         $loco.speed = $s
+        ` (Past its speed limit, the slider goes back to the limit.)
+        if $loco.speed != $s {
+            $throttle.value = $loco.speed
+        }
+    }
+    show_speed()
+}
+
+$roster_pick.on_selection_changed = function() {
+    global $roster, $roster_pick, $picked, $address, $long, $base, $status
+    $name = $roster_pick.selected_row_tag
+    $picked = if $name == null or $name == "" then null else $name
+    $entry = if $picked == null then null else $roster.entry($picked)
+    if $entry != null {
+        $address.text = to_text($entry.address)
+        $long.value = $entry.long
+        if $base != null {
+            take_locomotive()
+        } else {
+            $status.text = $entry.name + ": address " + $entry.address + ". Connect to drive it."
+        }
+    }
+}
+
+` Driving from the keyboard (keys no control used): Up and Down a step, Page Up and Page Down ten,
+` Space stops, Left and Right the direction, 0 to 9 the functions F0 to F9 (held for a momentary
+` one; a key held down repeats, so each is taken once until it is let go).
+$keys_down = []
+$win.on_key_down = function($key, $held) {
+    global $loco, $throttle, $direction, $keys_down
+    if $loco == null or count($held) > 0 {
+        return false
+    }
+    if contains(["Up", "Down", "PageUp", "PageDown"], $key) {
+        $step = select case $key {
+            case "Up": 1
+            case "Down": -1
+            case "PageUp": 10
+            else: -10
+        }
+        $throttle.value = keep_between($throttle.value + $step, 0, $throttle.maximum_value)
+        speed_from_slider()
+        return true
+    }
+    if $key == " " {
+        $throttle.value = 0
+        speed_from_slider()
+        return true
+    }
+    if $key == "Left" or $key == "Right" {
+        $tag = if $key == "Left" then "reverse" else "forward"
+        $direction.select_segment_with_tag($tag)
+        $loco.direction = $tag
+        return true
+    }
+    if is_digits($key) and length($key) == 1 {
+        if not contains($keys_down, $key) {
+            $keys_down[] = $key
+            $loco.press_function(to_number($key))
+            show_function_buttons()
+        }
+        return true
+    }
+    return false
+}
+$win.on_key_up = function($key, $held) {
+    global $loco, $keys_down
+    if is_digits($key) and length($key) == 1 and contains($keys_down, $key) {
+        $keys_down = remove_value($keys_down, $key)
+        if $loco != null {
+            $loco.release_function(to_number($key))
+            show_function_buttons()
+        }
+    }
+}
+
+` The latching keys' buttons as the locomotive's functions are (after a key changed one).
+function show_function_buttons() {
+    global $loco, $function_buttons, $function_states
+    foreach $function_buttons as $i: $b {
+        if $b.button_type == "toggle" {
+            $b.value = $loco.function($i)
+            $function_states[$i] = $b.value
+        }
     }
 }
 
@@ -395,6 +538,8 @@ $direction.on_segment_click = function() {
 $stop.on_click = function() {
     global $throttle
     $throttle.value = 0
+    ` (Setting the slider doesn't run its event: the locomotive is told here.)
+    speed_from_slider()
 }
 
 function emergency_stop() {
@@ -403,6 +548,7 @@ function emergency_stop() {
         $base.emergency_stop()
     }
     $throttle.value = 0
+    show_speed()
 }
 $emergency.on_click = function() {
     emergency_stop()

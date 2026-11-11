@@ -79,7 +79,11 @@ The example app `dcc_simulator.leah`, which comes with the addon, is a throttle:
 
 The example app `dcc_bench.leah` is the same throttle on Leah's base station board, with the reader: it finds the two boards, loads Leah's programs onto them, connects, and shows what the reader heard, how long the half-bits were, and whether that is within the NMRA's limits. When Linux doesn't let the account use the boards yet, it says so in plain words and offers to fix it.
 
-The example app `dcc_throttle.leah` drives a real locomotive on Leah's base station with its motor shield: the locomotive's address (a long one chosen by itself past 127), the track power with its current, a speed slider, Forward and Reverse (sent as soon as it connects, as some decoders keep their headlight off until they are told a direction), Stop and Emergency stop (also the Escape key), and the functions F0 to F12; its **Read address** button reads the address of the locomotive on the programming track and drives that one, and its **Decoder settings** row reads and writes any setting there, its name shown for the usual ones.
+The example app `dcc_throttle.leah` drives a real locomotive on Leah's base station with its motor shield: the locomotive's address (a long one chosen by itself past 127), the track power with its current, a speed slider, Forward and Reverse (sent as soon as it connects, as some decoders keep their headlight off until they are told a direction), Stop and Emergency stop (also the Escape key), and the functions F0 to F12; its **Read address** button reads the address of the locomotive on the programming track and drives that one, and its **Decoder settings** row reads and writes any setting there, its name shown for the usual ones. Its **Roster** list drives a saved locomotive, with its keys' labels, its momentary keys (on only while held), and its speed limit; and it drives from the keyboard: Up and Down a speed step, Page Up and Page Down ten, Space to stop, Left and Right the direction, 0 to 9 the functions F0 to F9.
+
+The example app `gamepad_throttle.leah` drives a locomotive with a game pad: the left stick faster and slower, the shoulder buttons ten steps, the direction pad the direction, A the horn, B the bell, Y the headlight, X stop, Start an emergency stop, and Select the track power. It runs on the simulated base station too, to try with no board.
+
+The example app `decoder_workshop.leah` shows every setting of a decoder by name, reads and writes them, and keeps them in the roster.
 
 ## See also
 

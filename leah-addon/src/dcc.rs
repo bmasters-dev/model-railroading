@@ -42,6 +42,23 @@ pub fn speed_128(address: u16, long: bool, speed: u8, forward: bool, emergency: 
     packet(&data)
 }
 
+/// The basic speed and direction for a decoder in 28- or 14-step mode (S-9.2: `01DCSSSS`). In 28
+/// steps, step n is sent as n + 3 over SSSS and C (its lowest bit); in 14 steps, step n is SSSS = n + 1,
+/// and C carries the headlight (F0), which a 14-step decoder takes from here. 0 stop, 1 emergency.
+pub fn speed_basic(address: u16, long: bool, speed: u8, forward: bool, emergency: bool, steps: u8, light: bool) -> Vec<u8> {
+    let d = if forward { 0x20 } else { 0 };
+    let low = if steps == 14 {
+        let s = if emergency { 1 } else if speed == 0 { 0 } else { speed.min(14) + 1 };
+        (if light { 0x10 } else { 0 }) | s
+    } else {
+        let v = if emergency { 2 } else if speed == 0 { 0 } else { speed.min(28) + 3 };
+        ((v & 1) << 4) | (v >> 1)
+    };
+    let mut data = address_bytes(address, long);
+    data.push(0x40 | d | low);
+    packet(&data)
+}
+
 /// The function group holding function `n` (0 to 28): F0 to F4, F5 to F8, F9 to F12, F13 to F20,
 /// F21 to F28.
 pub fn group_of(n: usize) -> usize {
@@ -195,11 +212,13 @@ pub struct DecoderState {
     /// A write on the main heard once, waiting for its identical second (S-9.2.1 2.3.7.3: two
     /// identical packets, no other packet to this decoder between them, a broadcast among them).
     pub pending_write: Option<Vec<u8>>,
+    /// The speed steps of the last speed it heard: 128, 28, or 14.
+    pub steps: u8,
 }
 
 impl Default for DecoderState {
     fn default() -> Self {
-        DecoderState { speed: 0, forward: true, functions: [false; FUNCTIONS], heard: 0, cvs: Default::default(), pending_write: None }
+        DecoderState { speed: 0, forward: true, functions: [false; FUNCTIONS], heard: 0, cvs: Default::default(), pending_write: None, steps: 128 }
     }
 }
 
@@ -275,6 +294,7 @@ pub fn obey(state: &mut DecoderState, instruction: &[u8]) -> Option<String> {
     state.pending_write = None;
     let words = match instruction {
         [0x3F, ds, ..] => {
+            state.steps = 128;
             state.forward = ds & 0x80 != 0;
             let direction = if state.forward { "forward" } else { "reverse" };
             match ds & 0x7F {
@@ -292,19 +312,31 @@ pub fn obey(state: &mut DecoderState, instruction: &[u8]) -> Option<String> {
                 }
             }
         }
-        // 01DCSSSS: the basic speed instruction; only its stops are taken here (the broadcast
-        // emergency stop among them).
-        [b, ..] if b & 0xC0 == 0x40 => match b & 0x0F {
-            0 => {
-                state.speed = 0;
-                "stop".to_string()
+        // 01DCSSSS: the basic speed instruction, read as the decoder's CV 29 says (bit 1 clear: 14
+        // steps, C its headlight; else 28 steps, C the step's lowest bit). Its stops (the broadcast
+        // emergency stop among them) leave the direction as it was.
+        [b, ..] if b & 0xC0 == 0x40 => {
+            let fourteen = state.cvs.get(&29).is_some_and(|c| c & 0x02 == 0);
+            let ssss = b & 0x0F;
+            if fourteen {
+                state.functions[0] = b & 0x10 != 0;
             }
-            1 => {
+            if ssss <= 1 {
                 state.speed = 0;
-                "emergency stop".to_string()
+                if ssss == 0 { "stop".to_string() } else { "emergency stop".to_string() }
+            } else {
+                state.forward = b & 0x20 != 0;
+                let direction = if state.forward { "forward" } else { "reverse" };
+                if fourteen {
+                    state.steps = 14;
+                    state.speed = ssss - 1;
+                } else {
+                    state.steps = 28;
+                    state.speed = ((ssss << 1) | (b >> 4 & 1)) - 3;
+                }
+                format!("speed {} of {}, {direction}", state.speed, state.steps)
             }
-            _ => return None,
-        },
+        }
         [b, ..] if b & 0xE0 == 0x80 => {
             state.functions[0] = b & 0x10 != 0;
             set(state, 1, b & 0x0F, 4);
@@ -342,6 +374,23 @@ fn on_words(state: &DecoderState, first: usize, last: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_basic_speed_packets_are_the_nmras_and_read_back() {
+        // 28 steps: step 1 is 0010/0, step 28 1111/1; 14 steps: step n is n + 1, the headlight in C.
+        assert_eq!(speed_basic(3, false, 1, true, false, 28, false)[1], 0x62);
+        assert_eq!(speed_basic(3, false, 28, true, false, 28, false)[1], 0x7F);
+        assert_eq!(speed_basic(3, false, 0, true, true, 28, false)[1], 0x61);
+        assert_eq!(speed_basic(3, false, 5, false, false, 14, true)[1], 0x56);
+        let mut d = DecoderState::default();
+        obey(&mut d, &speed_basic(3, false, 17, false, false, 28, false)[1..2]);
+        assert_eq!((d.speed, d.forward, d.steps), (17, false, 28));
+        d.cvs.insert(29, 4);
+        obey(&mut d, &speed_basic(3, false, 9, true, false, 14, true)[1..2]);
+        assert_eq!((d.speed, d.forward, d.steps, d.functions[0]), (9, true, 14, true));
+        obey(&mut d, &speed_basic(3, false, 0, true, false, 14, false)[1..2]);
+        assert_eq!((d.speed, d.functions[0]), (0, false));
+    }
 
     #[test]
     fn packets_are_the_nmras() {

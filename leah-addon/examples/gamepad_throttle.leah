@@ -1,0 +1,194 @@
+` A throttle on a game pad (design/model_railroading.md, "Phase A, item 6"): any USB or Bluetooth pad
+` Linux knows. Choose the base station (or the simulated one, to try it with no board) and a
+` locomotive from the roster or by its address, then Connect.
+`
+`   Left stick up and down    faster and slower (let go: the speed stays)
+`   Shoulder buttons          ten steps slower and faster
+`   Direction pad left/right  reverse and forward
+`   A                         horn (F2: on while held; a roster locomotive's keys as its entry says)
+`   B                         bell (F1)
+`   Y                         headlight (F0)
+`   X                         stop (eased by the decoder)
+`   Start                     emergency stop (every locomotive, at once)
+`   Select                    track power on and off
+
+$base = null
+$loco = null
+$roster = roster()
+$pad = game_controller()
+` (Which pad button works which function key.)
+$pad_functions = ["south": 2, "east": 1, "north": 0]
+
+$win = window(title: "Game pad throttle", width: 600, height: 420, minimum_width: 560, minimum_height: 400)
+
+$port_label = label(left: 20, top: 24, width: 110, text: "Base station:")
+$win.add($port_label)
+$port = popup_menu(left: 130, top: 20, width: 300)
+$win.add($port)
+$connect = button(left: 444, top: 18, width: 136, height: 34, text: "Connect", lock_right: true)
+$win.add($connect)
+
+$loco_label = label(left: 20, top: 68, width: 110, text: "Locomotive:")
+$win.add($loco_label)
+$pick = popup_menu(left: 130, top: 64, width: 300)
+$pick.add_row("(the address on the right)", tag: "")
+foreach $roster.names as $n {
+    $pick.add_row($n, tag: $n)
+}
+$pick.selected_row_index = 0
+$win.add($pick)
+$address = text_field(left: 444, top: 64, width: 136, text: "3", lock_right: true, hint: "address")
+$win.add($address)
+
+$speed = label(left: 20, top: 120, width: 560, height: 70, lock_right: true, text: "Stopped", font_size: 32, bold: true)
+$win.add($speed)
+$state = label(left: 20, top: 196, width: 560, lock_right: true, text: "")
+$win.add($state)
+$pad_state = label(left: 20, top: 226, width: 560, lock_right: true, text: "")
+$win.add($pad_state)
+$help = label(left: 20, top: 262, width: 560, height: 140, multi_line: true, lock_right: true, lock_bottom: true, _
+    text: "Left stick: faster and slower · Shoulders: ten steps · Pad left and right: direction" + end_of_line _
+        + "A: horn (F2) · B: bell (F1) · Y: headlight (F0) · X: stop" + end_of_line _
+        + "Start: emergency stop · Select: track power on and off")
+$win.add($help)
+
+function show() {
+    global $loco, $base, $speed, $state, $pad, $pad_state
+    $pad_state.text = if $pad.connected then "Pad: " + $pad.name else "No game pad: plug one in (USB) or connect it (Bluetooth)."
+    if $loco == null {
+        $speed.text = "Not connected"
+        $state.text = ""
+        return
+    }
+    $top = if $loco.speed_steps == 128 then 126 else $loco.speed_steps
+    $speed.text = if $loco.speed == 0 then "Stopped" else "Speed " + $loco.speed + " of " + $top
+    $lit = filter(range(0, 12), fn($n) => $loco.function($n))
+    $state.text = (if $loco.direction == "forward" then "Forward" else "Reverse") _
+        + " · track power " + (if $base.power then "on" else "off") _
+        + (if count($lit) == 0 then "" else " · on: " + join(map($lit, fn($n) => "F" + $n), ", "))
+}
+
+function take_locomotive() {
+    global $base, $loco, $roster, $pick, $address, $state
+    $old = $loco
+    $entry = if $pick.selected_row_tag == null or $pick.selected_row_tag == "" then null else $roster.entry($pick.selected_row_tag)
+    if $entry != null {
+        $loco = locomotive($entry, base: $base)
+    } else {
+        $n = to_number($address.text)
+        if $n == null or $n < 1 or $n > 10239 {
+            $state.text = "An address is a whole number from 1 to 10239."
+            return
+        }
+        $loco = locomotive($n, long: $n > 127, base: $base)
+        ` (No roster entry to say which keys are momentary: the horn, F2 on most sound decoders, is.)
+        $loco.momentary = [2]
+    }
+    if $old != null {
+        $old.speed = 0
+    }
+    ` (A direction first: some decoders keep their headlight off until they have one.)
+    $loco.direction = "forward"
+    show()
+}
+
+$connect.on_click = function() {
+    global $base, $loco, $port, $connect, $state
+    if $base != null {
+        $base.close()
+        $base = null
+        $loco = null
+        $connect.text = "Connect"
+        show()
+        return
+    }
+    try {
+        $base = if $port.selected_row_tag == "simulate" then dcc_base(simulate: true) else dcc_base($port.selected_row_tag)
+    } catch $e {
+        $state.text = $e.message
+        $base = null
+        return
+    }
+    $connect.text = "Disconnect"
+    take_locomotive()
+}
+
+$pick.on_selection_changed = function() {
+    global $base
+    if $base != null {
+        take_locomotive()
+    }
+}
+
+` -- the pad --
+
+$pad.on_button_pressed = function($button) {
+    global $base, $loco, $pad_functions
+    if $loco == null {
+        return
+    }
+    if has_key($pad_functions, $button) {
+        $loco.press_function($pad_functions[$button])
+    } else if $button == "west" {
+        $loco.stop()
+    } else if $button == "start" {
+        $base.emergency_stop()
+    } else if $button == "select" {
+        $base.power = not $base.power
+    } else if $button == "left" or $button == "right" {
+        $loco.direction = if $button == "left" then "reverse" else "forward"
+    } else if $button == "left_bumper" or $button == "right_bumper" {
+        $top = if $loco.speed_steps == 128 then 126 else $loco.speed_steps
+        $loco.speed = keep_between($loco.speed + (if $button == "left_bumper" then -10 else 10), 0, $top)
+    }
+    show()
+}
+
+$pad.on_button_released = function($button) {
+    global $loco, $pad_functions
+    if $loco != null and has_key($pad_functions, $button) {
+        $loco.release_function($pad_functions[$button])
+        show()
+    }
+}
+
+$pad.on_connected = function() {
+    show()
+}
+$pad.on_disconnected = function() {
+    global $loco
+    ` (A pad that goes, its battery flat: the locomotive stops, as a phone throttle's does.)
+    if $loco != null {
+        $loco.stop()
+    }
+    show()
+}
+
+` The stick changes the speed at a rate, ten times a second: all the way up, about a third of the
+` speed range each second. Let go, and the speed stays where it is.
+$steering = timer(period: 100, run_mode: "multiple")
+$steering.on_run = function() {
+    global $loco, $pad
+    if $loco == null or not $pad.connected or $pad.left_y == 0 {
+        return
+    }
+    $top = if $loco.speed_steps == 128 then 126 else $loco.speed_steps
+    $change = round(-$pad.left_y * $top / 30)
+    if $change != 0 {
+        $loco.speed = keep_between($loco.speed + $change, 0, $top)
+        show()
+    }
+}
+
+$port.add_row("Simulated (no board)", tag: "simulate")
+foreach dcc_ports() as $p {
+    $port.add_row($p["port"] + ": " + $p["name"], tag: $p["port"])
+    if starts_with($p["name"], "Arduino Mega") {
+        $port.selected_row_index = $port.row_count - 1
+    }
+}
+if $port.selected_row_index < 0 {
+    $port.selected_row_index = 0
+}
+show()
+$win.show()

@@ -88,3 +88,26 @@ Output:
 ```
 [["UP 792"], 792, true, 30]
 ```
+
+## Speed steps, a speed limit, and momentary keys
+
+A locomotive's own speed steps (28 here, in the NMRA's basic packets), its speed limit, and a horn on
+only while its key is held.
+
+```leah
+$base = dcc_base(simulate: true)
+$base.power = true
+$loco = locomotive(5, speed_steps: 28)
+$loco.speed_limit = 20
+$loco.speed = 28
+$loco.momentary = [2]
+$loco.press_function(2)
+$on = $loco.function(2)
+$loco.release_function(2)
+print([$loco.speed, $base.decoder(5)["speed"], $loco.speed_percent, $on, $loco.function(2)])
+```
+
+Output:
+```
+[20, 20, 71, true, false]
+```

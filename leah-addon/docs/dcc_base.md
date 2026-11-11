@@ -59,6 +59,7 @@ $base.power = true
 |---|---|---|
 | [current](#current) | number | ✓ |
 | [current_limit](#current_limit) | number | |
+| [locomotives](#locomotives) | array | ✓ |
 | [packets](#packets) | array | ✓ |
 | [port](#port) | text | ✓ |
 | [power](#power) | boolean | |
@@ -87,11 +88,13 @@ $base.power = true
 | [lock_decoder](#lock_decoder) | lock as number | |
 | [decoder](#decoder) | address as number, long: boolean | array |
 | [emergency_stop](#emergency_stop) | | |
+| [stop_all](#stop_all) | | |
 
 ## Events
 
 | Name | Parameters |
 |---|---|
+| [on_locomotive_changed](#on_locomotive_changed) | locomotive |
 | [on_read](#on_read) | what, value, error |
 | [on_write](#on_write) | what, value, error |
 
@@ -117,6 +120,27 @@ print("the track draws " + $base.current + " mA")
 **current_limit** · number
 
 The current, in milliamps, over which the board turns the track power off by itself (held for 5 ms): 10 to 5000, 1500 at the start. Outside that is a `range_error`, and anything but a whole number a `type_error`. A low limit is a safe way to try the cut-off: a 470 Ω resistor across the track at 12 V draws about 25 mA, so with the limit at 15 the power goes off. On a simulated base station it is kept but does nothing.
+
+---
+
+### locomotives
+
+**locomotives** · array · read-only
+
+Every [locomotive](ref:locomotive) the script holds on this base station, in the order made: for a list of what is running.
+
+```leah
+$base = dcc_base(simulate: true)
+$a = locomotive(3)
+$b = locomotive(7)
+print(map($base.locomotives, fn($l) => $l.address))
+```
+
+Output:
+
+```
+[3, 7]
+```
 
 ---
 
@@ -239,7 +263,7 @@ On a board: turns the track power off, forgets the refresh table, and lets go of
 
 **decoder**(address, long: false) · array
 
-What the decoder at an address understood from the signal: the simulated decoder's, or on a board, what the reader heard for that address, as an array: `address`, `long`, `speed` (0 to 126), `direction` (`"forward"` or `"reverse"`), `functions` (F0 to F28, each `true` or `false`), `packets` (how many it heard), and `cvs` (the settings written to it on the main with [locomotive.write_cv](ref:locomotive#write_cv), by number: on the simulated track). `null` when no packet has reached that decoder (and always on a board with no reader). On a board the reader tells Leah each packet when it first hears it and then at most every 2 seconds, so `packets` counts those, not every repeat. `long: true` asks for the decoder at a long address, as for [locomotive](ref:locomotive).
+What the decoder at an address understood from the signal: the simulated decoder's, or on a board, what the reader heard for that address, as an array: `address`, `long`, `speed` (in the speed steps it last heard), `speed_steps` (128, 28, or 14: how its last speed was sent; a simulated decoder reads 28 or 14 as its CV 29 says, as a decoder does), `direction` (`"forward"` or `"reverse"`), `functions` (F0 to F28, each `true` or `false`), `packets` (how many it heard), and `cvs` (the settings written to it on the main with [locomotive.write_cv](ref:locomotive#write_cv), by number: on the simulated track). `null` when no packet has reached that decoder (and always on a board with no reader). On a board the reader tells Leah each packet when it first hears it and then at most every 2 seconds, so `packets` counts those, not every repeat. `long: true` asks for the decoder at a long address, as for [locomotive](ref:locomotive).
 
 ```leah
 $base = dcc_base(simulate: true)
@@ -478,7 +502,30 @@ Output:
 00 41 41
 ```
 
+---
+
+### stop_all
+
+**stop_all**()
+
+Stops every locomotive the script holds on this base station, each as its [stop](ref:locomotive#stop) does: speed 0, eased by each decoder's deceleration. (For at once, [emergency_stop](#emergency_stop).)
+
 ## Event descriptions
+
+### on_locomotive_changed
+
+**on_locomotive_changed**(locomotive)
+
+A locomotive on this base station was given a new speed, direction, or function: by any part of the script, any window, a game pad, a timer. For a panel that shows every locomotive, kept up to date however each one is driven.
+
+```leah check
+$base.on_locomotive_changed = function($loco) {
+    print("locomotive " + $loco.address + ": speed " + $loco.speed + ", " + $loco.direction)
+}
+```
+
+---
+
 
 ### on_read
 

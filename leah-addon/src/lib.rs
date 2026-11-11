@@ -56,8 +56,8 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
         ],
         needs: Some(needs),
         objects: vec![
-            ("dcc_base", &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"], &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit", "identify_decoder", "reset_decoder", "find_decoder_locks", "unlock_decoder", "lock_decoder"], &["on_read", "on_write"]),
-            ("locomotive", &["address", "long", "base", "speed", "direction"], &["set_function", "function", "stop", "emergency_stop", "write_cv", "write_cv_bit"], &[]),
+            ("dcc_base", &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit", "locomotives"], &["emergency_stop", "stop_all", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit", "identify_decoder", "reset_decoder", "find_decoder_locks", "unlock_decoder", "lock_decoder"], &["on_read", "on_write", "on_locomotive_changed"]),
+            ("locomotive", &["address", "long", "base", "speed", "direction", "speed_steps", "speed_percent", "speed_limit", "momentary", "labels", "entry"], &["set_function", "function", "press_function", "release_function", "stop", "emergency_stop", "write_cv", "write_cv_bit"], &[]),
             ("decoder_definition", &["name", "maker", "versions", "settings", "groups", "cvs"], &["setting", "value_of", "cvs_of", "is_shown"], &[]),
             ("decoder_programmer", &["definition", "main_track", "values", "states", "cvs", "busy", "problems"], &["value", "set_value", "state", "read_all", "read", "write_changes", "write_all", "load_cvs", "cancel"], &["on_progress", "on_done"]),
             ("roster", &["path", "names", "count", "groups", "changed"], &["add", "entry", "entries", "remove", "save", "export_entries", "import_entries"], &[]),

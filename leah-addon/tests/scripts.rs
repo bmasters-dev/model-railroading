@@ -156,7 +156,7 @@ foreach [function() { return locomotive(0) }, function() { return locomotive(200
             "range_error: locomotive(): a locomotive's address is 1 to 10239, not 0\n",
             "range_error: locomotive(): 200 is a long address: give long: true (a short address is 1 to 127)\n",
             "range_error: locomotive(): a locomotive's address is 1 to 10239, not 10240\n",
-            "range_error: a locomotive's `speed` is 0 to 126 (the 128 speed steps), not 127\n",
+            "range_error: a locomotive's `speed` is 0 to 126 (its 128 speed steps), not 127\n",
             "type_error: a locomotive's `direction` is \"forward\" or \"reverse\", not \"up\"\n",
             "range_error: locomotive.set_function(): a function's number is 0 (the headlight) to 28, not 29\n",
             "type_error: a locomotive's `address` can be read but not set\n",
@@ -218,7 +218,7 @@ fn the_dcc_simulator_example_runs_its_train() {
     let _ = std::fs::remove_dir_all(&dir);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stdout.contains("[\"address\": 3, \"long\": false, \"speed\": 60, \"direction\": \"forward\", \"functions\": [true,"), "{stdout}\n{stderr}");
+    assert!(stdout.contains("[\"address\": 3, \"long\": false, \"speed\": 60, \"speed_steps\": 128, \"direction\": \"forward\", \"functions\": [true,"), "{stdout}\n{stderr}");
 }
 
 #[test]
@@ -1503,6 +1503,11 @@ $r.write_changes()
 /// Runs an example on the hidden test screen with stand-in boards, after `driver` (Leah lines run as
 /// the example starts); what it printed, or None when there is no Leah with windows or no screen.
 fn run_example_on_screen(test: &str, example: &str, boards: &FakeBoards, driver: &str, quit_after_ms: u32) -> Option<String> {
+    run_example_on_screen_with(test, example, Some(boards), driver, quit_after_ms, &[])
+}
+
+/// As `run_example_on_screen`, with no boards or with more of the environment set.
+fn run_example_on_screen_with(test: &str, example: &str, boards: Option<&FakeBoards>, driver: &str, quit_after_ms: u32, env: &[(&str, &str)]) -> Option<String> {
     let gui = std::env::var_os("LEAH_GUI").map(PathBuf::from).unwrap_or_else(|| home().join("Leah_Dev/target/all_addons/debug/leah"));
     let screen = home().join("Leah_Dev/tools/wayland_test_screen.sh");
     if !gui.is_file() || !screen.is_file() {
@@ -1511,7 +1516,7 @@ fn run_example_on_screen(test: &str, example: &str, boards: &FakeBoards, driver:
     }
     let dir = addons_folder(test);
     let list = dir.join("ports.txt");
-    std::fs::write(&list, format!("{}\t2341\t0042\t\n", boards.base)).unwrap();
+    std::fs::write(&list, boards.map_or(String::new(), |b| format!("{}\t2341\t0042\t\n", b.base))).unwrap();
     let file = dir.join("script.leah");
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(example);
     std::fs::write(&file, format!("include \"{}\"\n{driver}", example.display())).unwrap();
@@ -1525,6 +1530,7 @@ fn run_example_on_screen(test: &str, example: &str, boards: &FakeBoards, driver:
         .env("LEAH_TEST_DCC_PORTS", &list)
         .env("LEAH_TEST_INTERACT", "")
         .env("LEAH_QUIT_AFTER_MS", quit_after_ms.to_string())
+        .envs(env.iter().copied())
         .output()
         .expect("the hidden screen runs");
     let _ = std::fs::remove_dir_all(&dir);
@@ -1682,4 +1688,120 @@ fn a_roster_without_a_path_is_shared_by_every_app() {
     let out = run("roster-default", "$r = roster()\n$r.add(\"Switcher\")\n$r.save()\nprint([file_name($r.path), file_name(file_path($r.path)), file_name(file_path($r.path, levels: 2)), file_exists($r.path)])\nprint(file_name(file_path(data_path())) == file_name(file_path($r.path, levels: 2)))\n");
     assert!(out.success, "{}", out.stderr);
     assert_eq!(out.stdout, "[\"roster.json\", \"model_railroading\", \"data\", true]\ntrue\n");
+}
+
+#[test]
+fn a_throttle_has_speed_steps_a_limit_and_momentary_keys() {
+    // Speed in a locomotive's own steps (28 and 14 in NMRA's basic packets, read back by the simulated
+    // decoders as their CV 29 says), speed_percent, a roster entry's speed limit, labels, and
+    // momentary horn; press and release; every locomotive, stop_all(), on_locomotive_changed.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$changes = []
+$base.on_locomotive_changed = function($loco) {
+    global $changes
+    $changes[] = $loco.address
+}
+$a = locomotive(5, speed_steps: 28)
+$a.speed = 14
+print([$base.decoder(5)["speed"], $base.decoder(5)["speed_steps"], $a.speed_percent, last($base.packets)["bytes"]])
+$a.speed_percent = 100
+print([$a.speed, $base.decoder(5)["speed"]])
+$b = locomotive(6)
+$b.write_cv(29, 4)
+$c = locomotive(6, speed_steps: 14)
+$c.set_function(0, true)
+$c.speed = 7
+$d = $base.decoder(6)
+print([$d["speed"], $d["speed_steps"], $d["functions"][0]])
+$r = roster(join_path(make_temp_path(), "roster.json"))
+$e = $r.add("Switcher", address: 7, speed_limit: 63)
+$e.set_function(0, "Headlight")
+$e.set_function(2, "Horn", momentary: true)
+$sw = locomotive($e)
+$sw.speed = 100
+print([$sw.speed, $sw.speed_limit, $sw.labels, $sw.momentary, $sw.entry.name])
+$sw.press_function(2)
+$on = $sw.function(2)
+$sw.release_function(2)
+$sw.press_function(1)
+$sw.release_function(1)
+print([$on, $sw.function(2), $sw.function(1)])
+$sw.press_function(1)
+print([$sw.function(1), count($base.locomotives)])
+$base.stop_all()
+print([$a.speed, $c.speed, $sw.speed, $base.decoder(7)["speed"]])
+call_later(100, function() {
+    global $changes
+    print(count($changes))
+})
+foreach [function() { $a.speed = 29 }, function() { $a.speed_percent = 101 }, function() { locomotive(8, speed_steps: 64) }, function() { $sw.speed_limit = 127 }] as $f {
+    try {
+        $f()
+    } catch $e {
+        print($e.type + ": " + $e.message)
+    }
+}
+"#;
+    let out = run("throttle-extras", script);
+    assert!(out.success, "{}", out.stderr);
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "[14, 28, 50, \"05 78 7D\"]",
+            "[28, 28]",
+            "[7, 14, true]",
+            "[63, 63, [0: \"Headlight\", 2: \"Horn\"], [2], \"Switcher\"]",
+            "[true, false, true]",
+            "[false, 4]",
+            "[0, 0, 0, 0]",
+            "range_error: a locomotive's `speed` is 0 to 28 (its 28 speed steps), not 29",
+            "range_error: a locomotive's `speed_percent` is 0 to 100, not 101",
+            "range_error: locomotive()'s `speed_steps:` is 14, 28, or 128, as its decoder is set (CV 29), not 64",
+            "range_error: a locomotive's `speed_limit` is a speed step, 1 to 126, not 127",
+            "13",
+        ]
+    );
+}
+
+#[test]
+fn the_dcc_throttle_example_drives_a_roster_locomotive() {
+    // A locomotive picked from the roster: its keys' labels, its momentary horn as a plain button, and
+    // its speed limit holding the slider back.
+    let Some(boards) = fake_boards(&["--shield"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let driver = "call_later(300, function() {\n    global $connect\n    $connect.click()\n    call_later(3500, function() {\n        global $roster, $picked, $loco, $function_buttons, $throttle, $speed_label, $address\n        $e = $roster.add(\"Switcher\", address: 7, speed_limit: 63)\n        $e.set_function(2, \"Horn\", momentary: true)\n        $picked = \"Switcher\"\n        $address.text = \"7\"\n        take_locomotive()\n        print([$loco.address, $function_buttons[2].text, $function_buttons[2].button_type, $function_buttons[1].button_type, $throttle.maximum_value])\n        $throttle.value = 100\n        speed_from_slider()\n        print([$loco.speed, $throttle.value, $speed_label.text])\n        $loco.press_function(2)\n        $on = $loco.function(2)\n        $loco.release_function(2)\n        print([$on, $loco.function(2)])\n        quit()\n    })\n})\n";
+    let Some(printed) = run_example_on_screen("throttle-roster", "dcc_throttle.leah", &boards, driver, 12000) else { return };
+    drop(boards);
+    assert!(printed.contains("[7, \"F2 Horn\", \"normal\", \"toggle\", 126]\n[63, 63, \"Speed 63 of 126 (its limit: 63)\"]\n[true, false]"), "{printed}");
+}
+
+#[test]
+fn the_gamepad_throttle_example_drives_with_a_pad() {
+    // A recorded pad (LEAH_TEST_GAMEPAD): the stick up for half a second speeds the locomotive up and,
+    // let go, the speed stays; A sounds the horn while held; Start stops every locomotive at once.
+    // On the simulated base station.
+    let dir = std::env::temp_dir().join(format!("model-railroading-pad-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pad = dir.join("pad.json");
+    std::fs::write(
+        &pad,
+        // (Each event's time from the start, in milliseconds.)
+        r#"[{"after": 0, "event": "connected", "name": "Test pad"},
+{"after": 1500, "event": "axis", "axis": "left_y", "value": -1},
+{"after": 2000, "event": "axis", "axis": "left_y", "value": 0},
+{"after": 2500, "event": "pressed", "button": "south"},
+{"after": 2800, "event": "released", "button": "south"},
+{"after": 3100, "event": "pressed", "button": "start"},
+{"after": 3200, "event": "released", "button": "start"}]"#,
+    )
+    .unwrap();
+    let driver = "call_later(300, function() {\n    global $connect, $base\n    $connect.click()\n    $base.power = true\n    $horn = []\n    call_later(2100, function() {\n        global $loco, $speed\n        print([$loco.speed > 10, $loco.speed < 60, $speed.text])\n    })\n    call_later(2350, function() {\n        global $loco\n        print($loco.function(2))\n    })\n    call_later(3400, function() {\n        global $loco, $base, $pad\n        print([$loco.function(2), $loco.speed, $base.decoder(3)[\"speed\"], $pad.name])\n        quit()\n    })\n})\n";
+    let Some(printed) = run_example_on_screen_with("gamepad", "gamepad_throttle.leah", None, driver, 9000, &[("LEAH_TEST_GAMEPAD", pad.to_str().unwrap())]) else { return };
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(printed.contains("[true, true, \"Speed "), "{printed}");
+    assert!(printed.contains("\ntrue\n[false, 0, 0, \"Test pad\"]"), "{printed}");
 }

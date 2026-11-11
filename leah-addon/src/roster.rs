@@ -52,6 +52,13 @@ pub struct RosterEntry {
     id: u64,
 }
 
+impl EntryData {
+    /// A CV's value kept for it.
+    pub fn cv(&self, cv: u16) -> Option<u8> {
+        self.cvs.get(&cv).copied()
+    }
+}
+
 impl RosterEntry {
     /// Its record now (a copy), or why there is none.
     pub fn data(&self) -> Result<EntryData, Error> {
