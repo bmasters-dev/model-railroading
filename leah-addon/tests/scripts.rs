@@ -1184,3 +1184,69 @@ print([$base.find_decoder_locks(most: 3), $base.read_cv(15), $base.read_cv(16)])
     assert!(locks.success, "{}", locks.stderr);
     assert_eq!(locks.stdout, "[2]\nprogramming_error\n9\n[[], 0, 0]\n");
 }
+
+#[test]
+fn decoder_definitions_name_the_settings_and_do_the_bit_work() {
+    // The NMRA's standard set built in; a definition of a script's own over it, or from a JSON file;
+    // values to and from the CVs' bytes; the mistakes refused with what to do.
+    let dir = std::env::temp_dir().join(format!("model-railroading-definition-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("mine.json");
+    std::fs::write(&file, r#"{"name": "file one", "maker": 141, "versions": [82], "settings": [{"name": "Master volume", "cv": 128, "group": "Sound", "max": 192}]}"#).unwrap();
+    let script = format!(
+        r#"$d = decoder_definition("nmra")
+print([$d.name, count($d.settings), $d.groups[0], $d.cvs[0]])
+print($d.setting("Speed steps"))
+print([$d.value_of("Address used", [29: 38]), $d.value_of("Long address", [17: 194, 18: 218]), $d.value_of("Short address", [29: 6])])
+print($d.cvs_of("Address used", "short", [29: 38]))
+print($d.cvs_of("Long address", 730))
+print([$d.is_shown("Speed step 3", ["Speed curve": "three points"]), $d.is_shown("Speed step 3", [])])
+$mine = decoder_definition(name: "my sound decoder", maker: 141, versions: [82], settings: [_
+    ["name": "Master volume", "cv": 128, "group": "Sound"], _
+    ["name": "Bell type", "cv": 115, "bits": [0, 2], "choices": [0: "brass", 1: "steel", 2: "electronic"], "group": "Sound"], _
+    ["name": "Acceleration", "cv": 3, "max": 100, "group": "Motor"]])
+print([count($mine.settings), $mine.maker, $mine.versions, $mine.setting("Acceleration")["max"], $mine.value_of("Bell type", [115: 0x0A])])
+$f = read_decoder_definition_file("{file}")
+print([$f.name, $f.setting("Master volume")["max"], $f.groups[count($f.groups) - 1]])
+foreach [_
+    function() {{ decoder_definition("esu") }}, _
+    function() {{ $d.cvs_of("Short address", 200) }}, _
+    function() {{ $d.cvs_of("Direction reversed", true) }}, _
+    function() {{ $d.setting("Volume") }}, _
+    function() {{ decoder_definition(name: "x", settings: [["name": "Mute", "cv": 29, "bit": 5]]) }}, _
+    function() {{ decoder_definition(name: "x", settings: [["name": "Mute", "cv": 129, "bit": 1, "colour": "red"]]) }}, _
+    function() {{ decoder_definition(name: "x", settings: [["name": "Mute", "cv": 129, "shown_when": ["Volume", 0]]]) }}] as $f {{
+    try {{
+        $f()
+    }} catch $e {{
+        print($e.type + ": " + $e.message)
+    }}
+}}
+"#,
+        file = file.display()
+    );
+    let out = run("definitions", &script);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out.success, "{}", out.stderr);
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "[\"nmra\", 57, \"Address\", 1]",
+            "[\"name\": \"Speed steps\", \"cv\": 29, \"bit\": 1, \"kind\": \"choice\", \"choices\": [\"14\", \"28/128\"], \"group\": \"Configuration\", \"help\": \"How many speed steps the decoder takes from the throttle.\"]",
+            "[\"long\", 730, null]",
+            "[29: 6]",
+            "[17: 194, 18: 218]",
+            "[false, true]",
+            "[59, 141, [82], 100, \"electronic\"]",
+            "[\"file one\", 192, \"Sound\"]",
+            "range_error: decoder_definition(): there is no built-in definition named \"esu\" (there are \"nmra\")",
+            "range_error: decoder_definition.cvs_of(): the setting \"Short address\" takes a whole number from 1 to 127, not 200",
+            "range_error: decoder_definition.cvs_of(): CV 29's other bits aren't known: read it first (the setting \"Direction reversed\" is only part of it)",
+            "range_error: decoder_definition.setting(): the definition \"nmra\" has no setting named \"Volume\"",
+            "type_error: decoder_definition(): the settings \"Address used\" and \"Mute\" both use bits of CV 29",
+            "type_error: decoder_definition(): the setting \"Mute\" has the key \"colour\", which a setting doesn't have (it takes name, cv, bit, bits, kind, min, max, choices, group, help, default, read_only, write_all, shown_when, index)",
+            "type_error: decoder_definition(): the setting \"Mute\" depends on \"Volume\", but there is no setting named that",
+        ]
+    );
+}

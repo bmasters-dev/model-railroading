@@ -10,6 +10,7 @@
 mod base;
 mod board;
 mod dcc;
+mod definitions;
 mod makers;
 
 use leah_addon_kit::{Function, Needs, Value};
@@ -22,6 +23,7 @@ fn needs(name: &str, options: &[(String, Value, i64)]) -> Vec<Needs> {
         "dcc_base" if options.iter().any(|(n, v, _)| n == "simulate" && *v == Value::Bool(true)) => vec![],
         "dcc_base" | "dcc_ports" => vec![Needs::Device],
         "load_dcc_program" => vec![Needs::Programs, Needs::Device],
+        "read_decoder_definition_file" => vec![Needs::Files],
         _ => vec![],
     }
 }
@@ -43,11 +45,15 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("decoder_maker_name", &[], base::decoder_maker_name as Function),
             ("cv29_parts", &[], base::cv29_parts as Function),
             ("make_cv29", &[], base::make_cv29 as Function),
+            ("decoder_definition", &[], definitions::new_definition as Function),
+            ("decoder_definitions", &[], definitions::definitions_list as Function),
+            ("read_decoder_definition_file", &[Needs::Files], definitions::read_definition_file as Function),
         ],
         needs: Some(needs),
         objects: vec![
             ("dcc_base", &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"], &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit", "identify_decoder", "reset_decoder", "find_decoder_locks", "unlock_decoder", "lock_decoder"], &["on_read", "on_write"]),
             ("locomotive", &["address", "long", "base", "speed", "direction"], &["set_function", "function", "stop", "emergency_stop", "write_cv", "write_cv_bit"], &[]),
+            ("decoder_definition", &["name", "maker", "versions", "settings", "groups", "cvs"], &["setting", "value_of", "cvs_of", "is_shown"], &[]),
             ("dcc_program_job", &["port", "role", "board", "finished", "succeeded", "message"], &["wait"], &["on_finished"]),
         ],
         controls: vec![],

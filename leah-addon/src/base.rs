@@ -86,7 +86,7 @@ fn hardware(message: impl Into<String>) -> Error {
 }
 
 /// A value as Leah's messages show it: text in quotes, anything else by its kind.
-fn describe(v: &Value) -> String {
+pub(crate) fn describe(v: &Value) -> String {
     match v {
         Value::Text(t) => format!("{t:?}"),
         Value::Int(n) => n.to_string(),
