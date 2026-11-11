@@ -125,6 +125,11 @@ Step 2 of the safe ladder. Decided by Claude (the owner can overrule):
 - **Both boards on USB** to the PC, which powers them; no other supply connected.
 - The owner's account needs the `dialout` group to open the ports (`sudo usermod -aG dialout $USER`, then
   log out and in).
+- **`arduino-cli` is a prerequisite** (installed 2026-11-10 for development in `~/Leah_Tools`, version
+  1.5.1, with the `arduino:avr` core; a wrapper sets its folders so nothing goes into `~/.arduino15`).
+  It isn't a Debian package, so it can't go in addon.toml's `needs` (Debian packages only): the
+  README's "What you need" names it, and `dcc_base()` with a port says plainly when it is missing and
+  where to get it. A field for outside programs in addon.toml is asked of Leah (leah-language issue).
 - **The app must make that clear to its user** (the owner, 2026-11-10: end users won't know about
   `dialout`). `dcc_base("/dev/ttyACM0")` refused by the system gives a `hardware_error` of kind
   `"access_denied"` (as `serial_port` does) in plain words. The example app catches it and shows a
