@@ -6,7 +6,7 @@
 
 ## Goal
 
-A Leah app runs model trains **by itself**, with no other command station and no JMRI: throttles, panels, decoder settings, automation, phones as throttles. Two ways to reach a locomotive, behind one Leah object:
+A Leah app runs model trains **by itself**, with no other command station and no other model railroad program: throttles, panels, decoder settings, automation, phones as throttles. Two ways to reach a locomotive, behind one Leah object:
 
 - **DCC on the rails**: Leah's own **base station**, a small board running Leah's board program, makes the DCC signal (the NMRA standard, open to anyone) and powers the track. Any DCC decoder answers to it, the user's NCE and Digitrax decoders included.
 - **Dead rail**: battery-powered locomotives, each with an ESP32 and a motor driver doing **PWM** speed control, reached by radio over **ESP-NOW** (the ESP32's own link, no Wi-Fi network needed). No power on the rails; old DC locomotives come back to life.
@@ -25,7 +25,7 @@ DCC is a square wave switched every 58 µs (a 1) or 100 µs (a 0), refreshed con
 - **The board, to choose at stage 1:** an **ESP32** (exact pulses from its RMT peripheral, Wi-Fi to the PC, and the same chip sends dead rail's ESP-NOW, so one base station serves both), or the user's **Mega** with the EX-MotorShield8874 plugged straight on (no wiring). Either drives the track through the motor shield's H-bridge, whose current sensing gives short-circuit cut-off and the programming track's acknowledgments.
 - **The standards:** NMRA S-9.1 (the electrical signal), S-9.2 and S-9.2.1 (packets: speed in 14/28/128 steps, functions F0–F68, accessory decoders, operations-mode programming), S-9.2.3 (service mode: the programming track). RailCom (S-9.3.2, decoders talking back) later.
 
-## What Leah would build (the JMRI-like whole, Leah's way)
+## What Leah would build (the whole of the usual model railroad software, Leah's way)
 
 | Part | Leah |
 |---|---|
@@ -36,7 +36,7 @@ DCC is a square wave switched every 58 µs (a 1) or 100 µs (a 0), refreshed con
 | Panels | turnout, sensor, and block objects with events, drawn with the canvas; a track diagram control later |
 | Roster | locomotives and their settings, saved with the `database` object |
 | Automation | timers and events for the basics; blocks, routes, and signal logic as built-ins |
-| Phones as throttles | a built-in WiThrottle server, so phone throttle apps (Engine Driver, WiThrottle) drive trains through a Leah app ([the protocol](https://www.jmri.org/help/en/package/jmri/jmrit/withrottle/Protocol.shtml)) |
+| Phones as throttles | a built-in WiThrottle server, so phone throttle apps (Engine Driver, WiThrottle) drive trains through a Leah app (its protocol is published) |
 
 A sketch of the language (to be designed properly):
 
@@ -65,7 +65,7 @@ $block.on_occupied = function() { ... }
 - [ ] **4. Controls**: a throttle (speed, direction, function buttons) and a turnout and sensor panel; accessory decoders; sensors on the base station's pins.
 - [ ] **5. Wi-Fi to the base station**, and the **WiThrottle server**.
 - [ ] **6. Dead rail**: the receiver's board program (ESP32, motor driver, PWM, lights and sound outputs as functions, a battery reading), ESP-NOW from the base station; the old DC locomotive converted first.
-- [ ] **7. The rest of the JMRI-like whole**: functions up to F68, consists, the roster, blocks, routes and signals, a track diagram, automation.
+- [ ] **7. The rest of the usual model railroad software's whole**: functions up to F68, consists, the roster, blocks, routes and signals, a track diagram, automation.
 - [ ] **8. Later**: RailCom, boosters for larger layouts, LCC/OpenLCB for layout control (its CAN layer is there since 2026-10-15: the `can_bus` object, hardware.md).
 
 ## Stage 1a: the simulated base station (built 2026-11-09)
@@ -327,6 +327,6 @@ or `CV <cv> off <why>`; B's filler is the reset packet, never the idle one. Lear
 
 - **The base station's board** (stage 1): ESP32 or the Mega with the motor shield.
 - **Dead rail's radio messages** (stage 6): Leah's own, over ESP-NOW; whether a handheld throttle can talk to a locomotive directly.
-- **Decoder definitions:** JMRI's large library of decoder definitions (thousands of models with their CVs) is GPL-licensed. Reading them from the user's own JMRI files may be fine; building them into Leah raises a licensing question. Starting with the NMRA standard CVs avoids it. To look into properly at stage 3.
+- **Decoder definitions (decided by the owner, 2026-11-11):** Leah's **own** decoder definitions, in a simple format of its own, under Leah's licence, written from the NMRA's standards (S-9.2.2's CVs, the maker IDs) and the decoder makers' own published manuals, never copied or adapted from another program's files (the usual open-source model railroad software's library is GPL). Leah doesn't install, read, download from, or talk to that software: it competes with it in its own way, as a language whose addon's sample apps can grow to do what that software does. Its manuals are read as a reference for what to build (a scanning session, as the language's own was built from the usual app builder's manual), and the product's names are among the forbidden names (2026-11-11).
 
 **The user's model railroad electronics** (NCE boards and USB interface, DCC-EX motor and Wi-Fi shields, a Digitrax programmer, signals, lighting, powered trucks): [docs/maker_inventory.md](../maker_inventory.md), section 14 (2026-10-10).
