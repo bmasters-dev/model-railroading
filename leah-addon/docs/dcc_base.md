@@ -231,7 +231,7 @@ On a board: turns the track power off, forgets the refresh table, and lets go of
 
 **decoder**(address, long: false) · array
 
-What the decoder at an address understood from the signal: the simulated decoder's, or on a board, what the reader heard for that address, as an array: `address`, `long`, `speed` (0 to 126), `direction` (`"forward"` or `"reverse"`), `functions` (F0 to F28, each `true` or `false`), and `packets` (how many it heard). `null` when no packet has reached that decoder (and always on a board with no reader). On a board the reader tells Leah each packet when it first hears it and then at most every 2 seconds, so `packets` counts those, not every repeat. `long: true` asks for the decoder at a long address, as for [locomotive](ref:locomotive).
+What the decoder at an address understood from the signal: the simulated decoder's, or on a board, what the reader heard for that address, as an array: `address`, `long`, `speed` (0 to 126), `direction` (`"forward"` or `"reverse"`), `functions` (F0 to F28, each `true` or `false`), `packets` (how many it heard), and `cvs` (the settings written to it on the main with [locomotive.write_cv](ref:locomotive#write_cv), by number: on the simulated track). `null` when no packet has reached that decoder (and always on a board with no reader). On a board the reader tells Leah each packet when it first hears it and then at most every 2 seconds, so `packets` counts those, not every repeat. `long: true` asks for the decoder at a long address, as for [locomotive](ref:locomotive).
 
 ```leah
 $base = dcc_base(simulate: true)

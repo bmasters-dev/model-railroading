@@ -933,3 +933,113 @@ fn the_dcc_throttle_example_reads_and_writes_a_setting() {
     let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(printed.contains("Acceleration: 5\nCV 3 is now 12 (the decoder confirmed it)."), "{printed}");
 }
+
+#[test]
+fn settings_are_written_on_the_main() {
+    // On the simulated track: the decoder takes a write on its second identical packet (the base
+    // sends it twice), a bit write keeps the other bits, writes to one locomotive are spaced 500 ms
+    // apart unless `pause:` says otherwise, and CV 7 and 8 are refused.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$loco = locomotive(3)
+$t = milliseconds()
+$loco.write_cv(3, 20)
+$loco.write_cv_bit(29, 5, true)
+$loco.write_cv_bit(29, 1, 1)
+$spaced = milliseconds() - $t
+$loco.write_cv(4, 12, pause: 0)
+print($base.decoder(3)["cvs"])
+print([$spaced >= 1000, $spaced < 2500])
+print(last($base.packets)["meaning"])
+print(last($base.packets)["bytes"])
+foreach [function() { $loco.write_cv(8, 8) }, function() { $loco.write_cv(7, 1) }, function() { $loco.write_cv(3, 300) }, function() { $loco.write_cv_bit(29, 8, true) }, function() { $loco.write_cv(3, 1, pause: -1) }] as $f {
+    try {
+        $f()
+    } catch $e {
+        print($e.type + ": " + $e.message)
+    }
+}
+"#;
+    let sim = run("ops-sim", script);
+    assert!(sim.success, "{}", sim.stderr);
+    assert_eq!(
+        sim.stdout,
+        concat!(
+            "[3: 20, 4: 12, 29: 34]\n",
+            "[true, true]\n",
+            "locomotive 3: CV 4 = 12 (on the main)\n",
+            "03 EC 03 0C E0\n",
+            "range_error: locomotive.write_cv(): CV 8 isn't written here: writing it is how many decoders are reset to their factory settings, every setting lost\n",
+            "range_error: locomotive.write_cv(): CV 7 is the decoder's version, which can't be written\n",
+            "range_error: locomotive.write_cv(): a setting's value is 0 to 255, not 300\n",
+            "range_error: locomotive.write_cv_bit(): a bit is 0 to 7, not 8\n",
+            "range_error: locomotive.write_cv()'s `pause:` is 0 to 10000 milliseconds, not -1\n",
+        )
+    );
+
+    // On a board: each write goes out as a packet sent now (three times, idle packets between).
+    let log = std::env::temp_dir().join(format!("model-railroading-ops-log-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let Some(boards) = fake_boards(&["--log", log.to_str().unwrap()]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let board = run(
+        "ops-board",
+        &format!("$base = dcc_base(\"{}\")\n$base.power = true\n$loco = locomotive(1234, long: true)\n$loco.write_cv(3, 20, pause: 0)\n$loco.write_cv_bit(29, 5, true, pause: 0)\n", boards.base),
+    );
+    drop(boards);
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    assert!(board.success, "{}", board.stderr);
+    let sent: Vec<&str> = said.lines().filter(|l| l.starts_with("S ")).collect();
+    assert_eq!(sent, ["S C4 D2 EC 02 14 EC", "S C4 D2 E8 1C FD 1F"], "{said}");
+}
+
+#[test]
+fn the_dcc_throttle_example_writes_a_setting_on_the_main() {
+    let gui = std::env::var_os("LEAH_GUI").map(PathBuf::from).unwrap_or_else(|| home().join("Leah_Dev/target/all_addons/debug/leah"));
+    let screen = home().join("Leah_Dev/tools/wayland_test_screen.sh");
+    if !gui.is_file() || !screen.is_file() {
+        eprintln!("skipped: no Leah with windows ({}) or no hidden test screen", gui.display());
+        return;
+    }
+    let log = std::env::temp_dir().join(format!("model-railroading-main-log-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let Some(boards) = fake_boards(&["--shield", "--log", log.to_str().unwrap()]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let dir = addons_folder("throttle-main");
+    let list = dir.join("ports.txt");
+    std::fs::write(&list, format!("{}\t2341\t0042\t\n", boards.base)).unwrap();
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/dcc_throttle.leah");
+    let file = dir.join("script.leah");
+    std::fs::write(
+        &file,
+        format!(
+            "include \"{}\"\ncall_later(300, function() {{\n    global $connect\n    $connect.click()\n    call_later(3500, function() {{\n        global $power, $on_main, $cv_value\n        $power.value = true\n        $on_main.value = true\n        $cv_value.text = \"9\"\n        call_later(400, function() {{\n            global $cv_write, $cv_read, $status\n            print([$cv_write.enabled, $cv_read.enabled])\n            $cv_write.click()\n            print($status.text)\n            quit()\n        }})\n    }})\n}})\n",
+            example.display()
+        ),
+    )
+    .unwrap();
+    let out = Command::new("sh")
+        .arg(&screen)
+        .arg("--gui")
+        .arg(&gui)
+        .arg(&file)
+        .env("LEAH_3RD_PARTY_ADDONS", &dir)
+        .env("LEAH_USER_ADDONS", "")
+        .env("LEAH_TEST_DCC_PORTS", &list)
+        .env("LEAH_TEST_INTERACT", "")
+        .env("LEAH_QUIT_AFTER_MS", "12000")
+        .output()
+        .expect("the hidden screen runs");
+    drop(boards);
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_dir_all(&dir);
+    let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(printed.contains("[true, false]\nCV 3 = 9 sent to locomotive 1 on the main"), "{printed}");
+    assert!(said.lines().any(|l| l == "S 01 EC 02 09 E6"), "{said}");
+}

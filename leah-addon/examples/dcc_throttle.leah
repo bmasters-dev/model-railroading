@@ -79,7 +79,7 @@ foreach $names as $n: $words {
 }
 
 ` -- the decoder's settings, on the programming track --
-$settings_box = group_box(left: 20, top: 462, width: 740, height: 76, text: "Decoder settings (on the programming track, with the track power off)", lock_right: true)
+$settings_box = group_box(left: 20, top: 462, width: 740, height: 76, text: "Decoder settings (on the programming track with the power off, or on the main)", lock_right: true)
 $win.add($settings_box)
 $cv_label = label(left: 36, top: 496, width: 30, text: "CV")
 $win.add($cv_label)
@@ -87,13 +87,16 @@ $cv = text_field(left: 64, top: 492, width: 60, text: "3")
 $win.add($cv)
 $cv_arrows = up_down_arrows(left: 126, top: 492, minimum_value: 1, maximum_value: 1024, value: 3)
 $win.add($cv_arrows)
-$cv_name = label(left: 160, top: 496, width: 220, text: "")
+$cv_name = label(left: 160, top: 496, width: 170, text: "")
 $win.add($cv_name)
-$cv_value = text_field(left: 386, top: 492, width: 70, text: "", hint: "value")
+$cv_value = text_field(left: 334, top: 492, width: 60, text: "", hint: "value")
 $win.add($cv_value)
-$cv_read = button(left: 470, top: 488, width: 130, height: 34, text: "Read", enabled: false)
+$on_main = checkbox(left: 400, top: 494, text: "On the main", enabled: false, _
+    tooltip: "Writes to the locomotive being driven, on the main track, with the power on (no reading back there)")
+$win.add($on_main)
+$cv_read = button(left: 520, top: 488, width: 100, height: 34, text: "Read", enabled: false)
 $win.add($cv_read)
-$cv_write = button(left: 612, top: 488, width: 130, height: 34, text: "Write", enabled: false, lock_left: false, lock_right: true)
+$cv_write = button(left: 630, top: 488, width: 112, height: 34, text: "Write", enabled: false, lock_left: false, lock_right: true)
 $win.add($cv_write)
 ` What the usual settings are (NMRA S-9.2.2).
 $cv_names = [1: "Short address", 2: "Start voltage", 3: "Acceleration", 4: "Deceleration", 5: "Top speed", _
@@ -124,11 +127,14 @@ function look_for_boards() {
     }
 }
 
+` What the programming controls may do now: the programming track needs the track power off; writing
+` on the main needs a connection only.
 function set_programming_enabled($on) {
-    global $read, $cv_read, $cv_write
-    foreach [$read, $cv_read, $cv_write] as $c {
-        $c.enabled = $on
-    }
+    global $base, $read, $cv_read, $cv_write, $on_main
+    $read.enabled = $on
+    $on_main.enabled = $base != null
+    $cv_read.enabled = $on and not $on_main.value
+    $cv_write.enabled = if $on_main.value then $base != null else $on
 }
 
 function show_cv_name() {
@@ -268,6 +274,11 @@ $power.on_value_changed = function() {
     set_programming_enabled($base != null and not $power.value)
 }
 
+$on_main.on_value_changed = function() {
+    global $base, $power
+    set_programming_enabled($base != null and not $power.value)
+}
+
 $cv.on_text_changed = function() {
     global $cv, $cv_arrows
     show_cv_name()
@@ -287,7 +298,7 @@ $cv_arrows.on_value_changed = function() {
 
 ` Reads the setting shown, or writes the value typed into it, in the background (a few seconds).
 function start_programming($writing) {
-    global $base, $cv, $cv_value, $status, $throttle, $power
+    global $base, $loco, $cv, $cv_value, $status, $throttle, $power, $on_main
     if $base == null {
         return
     }
@@ -298,6 +309,17 @@ function start_programming($writing) {
     $n = to_number($cv.text)
     if $writing and (not is_digits(trim($cv_value.text)) or to_number($cv_value.text) > 255) {
         $status.text = "A setting's value is a number from 0 to 255."
+        return
+    }
+    if $writing and $on_main.value {
+        ` (On the main: written to the locomotive being driven, at once; no reading back there.)
+        try {
+            $loco.write_cv($n, to_number($cv_value.text))
+            $status.text = "CV " + $n + " = " + trim($cv_value.text) + " sent to locomotive " + $loco.address _
+                + " on the main (a decoder can't confirm it there: watch or listen for the change)."
+        } catch $e {
+            $status.text = $e.message
+        }
         return
     }
     try {

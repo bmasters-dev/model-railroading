@@ -190,12 +190,33 @@ pub struct DecoderState {
     pub forward: bool,
     pub functions: [bool; FUNCTIONS],
     pub heard: u64,
+    /// The settings written to it on the main (CV number, value).
+    pub cvs: std::collections::BTreeMap<u16, u8>,
+    /// A write on the main heard once, waiting for its identical second (S-9.2.1 2.3.7.3: two
+    /// identical packets, no other packet to this decoder between them, a broadcast among them).
+    pub pending_write: Option<Vec<u8>>,
 }
 
 impl Default for DecoderState {
     fn default() -> Self {
-        DecoderState { speed: 0, forward: true, functions: [false; FUNCTIONS], heard: 0 }
+        DecoderState { speed: 0, forward: true, functions: [false; FUNCTIONS], heard: 0, cvs: Default::default(), pending_write: None }
     }
+}
+
+/// Writing a whole setting on the main (S-9.2.1's long form: `1110 11VV`, `VVVVVVVV`, the value).
+pub fn ops_write_byte(address: u16, long: bool, cv: u16, value: u8) -> Vec<u8> {
+    let mut data = address_bytes(address, long);
+    let v = cv - 1;
+    data.extend([0xEC | (v >> 8) as u8 & 0x03, (v & 0xFF) as u8, value]);
+    packet(&data)
+}
+
+/// Writing one bit of a setting on the main (`1110 10VV`, `VVVVVVVV`, `1111 DBBB`).
+pub fn ops_write_bit(address: u16, long: bool, cv: u16, bit: u8, on: bool) -> Vec<u8> {
+    let mut data = address_bytes(address, long);
+    let v = cv - 1;
+    data.extend([0xE8 | (v >> 8) as u8 & 0x03, (v & 0xFF) as u8, 0xF0 | u8::from(on) << 3 | bit & 0x07]);
+    packet(&data)
 }
 
 /// Whom a packet is for.
@@ -227,6 +248,31 @@ pub fn obey(state: &mut DecoderState, instruction: &[u8]) -> Option<String> {
             state.functions[first + i] = bits >> i & 1 == 1;
         }
     };
+    // A write on the main acts on its second identical packet; any other packet to this decoder
+    // between them (a broadcast too) cancels it.
+    if let [g, v, d, ..] = instruction
+        && (g & 0xFC == 0xEC || (g & 0xFC == 0xE8 && d & 0xF0 == 0xF0))
+    {
+        let cv = (u16::from(g & 0x03) << 8 | u16::from(*v)) + 1;
+        if state.pending_write.as_deref() != Some(&instruction[..3]) {
+            state.pending_write = Some(instruction[..3].to_vec());
+            return None;
+        }
+        state.pending_write = None;
+        let words = if g & 0xFC == 0xEC {
+            state.cvs.insert(cv, *d);
+            format!("CV {cv} = {d} (on the main)")
+        } else {
+            let bit = d & 0x07;
+            let on = d & 0x08 != 0;
+            let old = state.cvs.get(&cv).copied().unwrap_or(0);
+            state.cvs.insert(cv, if on { old | 1 << bit } else { old & !(1 << bit) });
+            format!("CV {cv} bit {bit} = {} (on the main)", u8::from(on))
+        };
+        state.heard += 1;
+        return Some(words);
+    }
+    state.pending_write = None;
     let words = match instruction {
         [0x3F, ds, ..] => {
             state.forward = ds & 0x80 != 0;
@@ -306,6 +352,34 @@ mod tests {
         on[0] = true;
         assert_eq!(hex(&functions(3, false, 0, &on)), "03 90 93");
         assert_eq!(hex(&broadcast_emergency_stop()), "00 41 41");
+        // S-9.2.1 2.3.7.3: CV 3 = 20 on address 3 (1110 1100, CV-1 = 2, 20); CV 29 bit 5 set.
+        assert_eq!(hex(&ops_write_byte(3, false, 3, 20)), "03 EC 02 14 F9");
+        assert_eq!(hex(&ops_write_bit(3, false, 29, 5, true)), "03 E8 1C FD 0A");
+        assert_eq!(hex(&ops_write_byte(1234, true, 300, 7)), "C4 D2 ED 2B 07 D7");
+    }
+
+    #[test]
+    fn a_write_on_the_main_takes_two_identical_packets() {
+        let write = ops_write_byte(3, false, 3, 20);
+        let instruction = &write[1..write.len() - 1];
+        let mut state = DecoderState::default();
+        assert_eq!(obey(&mut state, instruction), None);
+        assert!(state.cvs.is_empty());
+        assert_eq!(obey(&mut state, instruction).as_deref(), Some("CV 3 = 20 (on the main)"));
+        assert_eq!(state.cvs.get(&3), Some(&20));
+        // Another packet to the decoder between the two cancels it.
+        let other = ops_write_byte(3, false, 4, 9);
+        let other_instruction = &other[1..other.len() - 1];
+        obey(&mut state, other_instruction);
+        obey(&mut state, &[0x3F, 0x80]);
+        obey(&mut state, other_instruction);
+        assert_eq!(state.cvs.get(&4), None);
+        // A bit write.
+        let bit = ops_write_bit(3, false, 29, 5, true);
+        let b = &bit[1..bit.len() - 1];
+        obey(&mut state, b);
+        obey(&mut state, b);
+        assert_eq!(state.cvs.get(&29), Some(&0x20));
     }
 
     #[test]

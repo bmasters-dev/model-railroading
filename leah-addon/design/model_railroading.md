@@ -316,6 +316,19 @@ or `CV <cv> off <why>`; B's filler is the reset packet, never the idle one. Lear
   the IDE, addon 0.5.0): CV 3 read as 6 (the acceleration), the same 6 written back, and the decoder
   confirmed it: writing proven on a real decoder (SoundTraxx), nothing changed in it.
 
+## Phase A, item 1: programming on the main (built 2026-11-11, model-railroading#5)
+
+`$loco.write_cv($cv, $value, pause: 500)` and `write_cv_bit($cv, $bit, $on)`: S-9.2.1 2.3.7.3's long
+form (`1110 11VV`, `VVVVVVVV`, the value; bit: `1110 10VV`, `VVVVVVVV`, `1111 DBBB`), checked against
+the saved standard (2025 edition): a decoder writes on the second identical packet with no other
+packet to it between them (a broadcast counts), and never acts on one sent to its consist address. On
+the board it goes out as a packet sent now (three copies, idle packets between); the simulated track
+delivers it twice, and the simulated decoders keep the two-packet rule (`decoder()`'s `cvs`). Writes
+to one locomotive are 500 ms apart by default (`pause:`), as some decoders miss one sent sooner (the
+scanning session's finding). CV 7 and 8 are refused, as on the programming track. The throttle's
+settings row has **On the main**: Write goes to the locomotive being driven, with the power on, Read
+greyed out (nothing can answer on the main without RailCom).
+
 ## Decided: no BiDiB (the owner, 2026-11-11)
 
 BiDiB's specification is free but supervised: the working group must be told before anything is

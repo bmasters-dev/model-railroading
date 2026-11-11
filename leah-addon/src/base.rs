@@ -17,7 +17,10 @@ use crate::dcc::{self, DecoderState, Reader, Target};
 const BASE_PROPS: &[&str] = &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"];
 const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address"];
 const LOCO_PROPS: &[&str] = &["address", "long", "base", "speed", "direction"];
-const LOCO_FUNCS: &[&str] = &["set_function", "function", "stop", "emergency_stop"];
+const LOCO_FUNCS: &[&str] = &["set_function", "function", "stop", "emergency_stop", "write_cv", "write_cv_bit"];
+/// The least time between two writes on the main to one locomotive, unless `pause:` says otherwise:
+/// some decoders miss a write that comes too soon after the last.
+const WRITE_PAUSE_MS: i64 = 500;
 
 /// The packets a base station keeps for `packets`.
 const KEPT: usize = 200;
@@ -328,9 +331,16 @@ impl DccBase {
     /// power on). On a board: kept in its refresh table's place `keep`, or sent now. Either way into
     /// `packets`.
     fn send(&self, packet: Vec<u8>, meaning: String, keep: Option<u8>, call: &Call) -> Result<(), Error> {
+        self.send_times(packet, meaning, keep, 1, call)
+    }
+
+    /// As `send`, the packet going onto the simulated track `times` times (a write on the main needs
+    /// two identical packets; the board sends every packet sent now three times anyway).
+    fn send_times(&self, packet: Vec<u8>, meaning: String, keep: Option<u8>, times: usize, call: &Call) -> Result<(), Error> {
         let heard = if self.simulated() {
             self.power.get() && {
                 let halves = dcc::timings(&dcc::bits(&packet));
+                let halves: Vec<u32> = std::iter::repeat_n(halves, times).flatten().collect();
                 let read = self.reader.borrow_mut().read(&halves);
                 let mut decoders = self.decoders.borrow_mut();
                 let mut any = false;
@@ -670,6 +680,8 @@ fn decoder_value(address: u16, long: bool, state: &DecoderState) -> Value {
         ("direction", Value::from(if state.forward { "forward" } else { "reverse" })),
         ("functions", Value::list(state.functions.iter().map(|on| Value::from(*on)))),
         ("packets", Value::from(state.heard as i64)),
+        // (The settings written to it on the main, by number: on the simulated track.)
+        ("cvs", Value::map(state.cvs.iter().map(|(cv, v)| (i64::from(*cv), Value::from(i64::from(*v)))))),
     ])
 }
 
@@ -701,6 +713,8 @@ pub struct Locomotive {
     /// On a board: the refresh table's places keeping its speed and its F0 to F4 (None: sent once).
     speed_place: Option<u8>,
     lights_place: Option<u8>,
+    /// When the last write on the main to it went out.
+    last_write: Cell<Option<std::time::Instant>>,
 }
 
 /// `locomotive($address, long: false, base: ...)`.
@@ -721,7 +735,7 @@ pub fn new_locomotive(call: &mut Call) -> Result<Value, Error> {
         None => return Err(hardware("locomotive(): there is no base station: make one first, dcc_base(\"/dev/ttyACM0\") or dcc_base(simulate: true)")),
     };
     let (speed_place, lights_place) = if base.simulated() { (None, None) } else { base.places_for(address, long, call) };
-    let value = call.new_object(Locomotive { base: base.clone(), address, long, speed: Cell::new(0), forward: Cell::new(true), functions: Cell::new([false; dcc::FUNCTIONS]), speed_place, lights_place });
+    let value = call.new_object(Locomotive { base: base.clone(), address, long, speed: Cell::new(0), forward: Cell::new(true), functions: Cell::new([false; dcc::FUNCTIONS]), speed_place, lights_place, last_write: Cell::new(None) });
     if let Some(loco) = call.own_value::<Locomotive>(&value) {
         let mut kept = base.locomotives.borrow_mut();
         kept.retain(|w| w.strong_count() > 0);
@@ -843,6 +857,56 @@ impl Object for Locomotive {
                 call.only_options(&[])?;
                 self.speed.set(0);
                 self.send_speed(function == "emergency_stop", call)?;
+                Ok(Value::Null)
+            }
+            "write_cv" | "write_cv_bit" => {
+                let bit = function == "write_cv_bit";
+                call.count_between(if bit { 3 } else { 2 }, if bit { 3 } else { 2 })?;
+                call.only_options(&["pause"])?;
+                let cv = whole(&what, "a setting's number", call.arg(0))?;
+                if !(1..=1024).contains(&cv) {
+                    return Err(Error::range_error(format!("{what}(): a setting (CV) is 1 to 1024, not {cv}")));
+                }
+                match cv {
+                    7 => return Err(Error::range_error(format!("{what}(): CV 7 is the decoder's version, which can't be written"))),
+                    8 => return Err(Error::range_error(format!("{what}(): CV 8 isn't written here: writing it is how many decoders are reset to their factory settings, every setting lost"))),
+                    _ => {}
+                }
+                let pause = match call.option("pause") {
+                    None => WRITE_PAUSE_MS,
+                    Some(v) => match v.as_int() {
+                        Some(ms) if (0..=10_000).contains(&ms) => ms,
+                        _ => return Err(Error::range_error(format!("{what}()'s `pause:` is 0 to 10000 milliseconds, not {}", describe(v))).at(call.option_line("pause"))),
+                    },
+                };
+                let (packet, words) = if bit {
+                    let b = whole(&what, "a bit's number", call.arg(1))?;
+                    if !(0..=7).contains(&b) {
+                        return Err(Error::range_error(format!("{what}(): a bit is 0 to 7, not {b}")));
+                    }
+                    let on = match call.arg(2) {
+                        Value::Bool(on) => *on,
+                        Value::Int(0) => false,
+                        Value::Int(1) => true,
+                        other => return Err(Error::type_error(format!("{what}(): the bit's value is true or false (or 1 or 0), not {}", describe(other)))),
+                    };
+                    (dcc::ops_write_bit(self.address, self.long, cv as u16, b as u8, on), format!("CV {cv} bit {b} = {} (on the main)", u8::from(on)))
+                } else {
+                    let value = whole(&what, "a setting's value", call.arg(1))?;
+                    if !(0..=255).contains(&value) {
+                        return Err(Error::range_error(format!("{what}(): a setting's value is 0 to 255, not {value}")));
+                    }
+                    (dcc::ops_write_byte(self.address, self.long, cv as u16, value as u8), format!("CV {cv} = {value} (on the main)"))
+                };
+                // (Spaced from the last write to this locomotive: some decoders miss one sent sooner.)
+                if let Some(last) = self.last_write.get() {
+                    let wait = std::time::Duration::from_millis(pause as u64).saturating_sub(last.elapsed());
+                    if !wait.is_zero() {
+                        std::thread::sleep(wait);
+                    }
+                }
+                self.base.send_times(packet, format!("{}: {words}", self.name()), None, 2, call)?;
+                self.last_write.set(Some(std::time::Instant::now()));
                 Ok(Value::Null)
             }
             other => Err(call.unknown_function("locomotive", other, LOCO_FUNCS)),
