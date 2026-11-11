@@ -1137,6 +1137,12 @@ print([decoder_maker_name(153), decoder_maker_name(250), cv29_parts(38)["long_ad
     drop(boards);
     assert!(older.success, "{}", older.stderr);
     assert_eq!(older.stdout, "[\"Sound Value, RTR, Mainline\", \"12\", [\"settings_set\": 40]]\n");
+    // (0 in both, as the owner's Sound Value decoder gave: unknown, not firmware "0".)
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=1,29=6,8=141,7=82,19=0,105=0,106=0"]) else { return };
+    let zero = run("identify-zero", &format!("$base = dcc_base(\"{}\")\n$id = $base.identify_decoder()\nprint([$id[\"firmware\"], $id[\"product\"]])\n", boards.base));
+    drop(boards);
+    assert!(zero.success, "{}", zero.stderr);
+    assert_eq!(zero.stdout, "[null, [\"settings_set\": null]]\n");
 
     // A maker whose reset isn't known: refused, unless the script gives it.
     let Some(boards) = fake_boards(&["--shield", "--cvs", "1=7,29=6,8=99"]) else { return };

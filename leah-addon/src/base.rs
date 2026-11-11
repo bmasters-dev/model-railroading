@@ -734,7 +734,11 @@ impl Object for DccBase {
                                 ("id", Value::from(v[3])),
                             ]))
                         } else {
-                            (Value::from(major.to_string()), Value::map([("settings_set", Value::from(minor))]))
+                            // (CV 105 and 106 are also the NMRA's user IDs: 0 there is a decoder that
+                            // doesn't keep them, as the owner's Sound Value decoder (CV 7 = 82) gave,
+                            // not firmware 0: unknown.)
+                            let known = |v: i64| if v == 0 { Value::Null } else { Value::from(v) };
+                            (if major == 0 { Value::Null } else { Value::from(major.to_string()) }, Value::map([("settings_set", known(minor))]))
                         }
                     } else {
                         (Value::Null, Value::Null)
