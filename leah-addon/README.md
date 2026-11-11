@@ -24,6 +24,7 @@ by `tools/docs.py`.
 | `design/` | The plan and the decisions |
 | `tests/` | Scripts run by Leah with this addon, the examples on Leah's hidden test screen, and stand-ins for the boards (`fake_boards.py`) |
 | `tools/publish_release.py` | Builds it and publishes a release (`leah-addon-v<version>`) |
+| `tools/bench.sh` | Tries the addon as just built on the bench, before it is released: an example (`sh tools/bench.sh phone_server`) or any script, with Leah's development build, on your own screen, with the installed IDE's roster |
 | `tools/docs.py` | Checks every page's samples and links (`check`) and publishes the pages to the wiki (`wiki`) |
 | `tools/make_icons.leah` | Draws its icons into `model_railroading.icons` |
 
