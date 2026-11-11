@@ -52,8 +52,8 @@ It starts stopped, going forward, with every function off; nothing is sent until
 | [function](#function) | number | boolean |
 | [set_function](#set_function) | number, on as boolean | |
 | [stop](#stop) | | |
-| [write_cv](#write_cv) | cv as number, value as number, pause: number | |
-| [write_cv_bit](#write_cv_bit) | cv as number, bit as number, on as boolean, pause: number | |
+| [write_cv](#write_cv) | cv as number, value as number, pause: number, index: array | |
+| [write_cv_bit](#write_cv_bit) | cv as number, bit as number, on as boolean, pause: number, index: array | |
 
 ## Property descriptions
 
@@ -164,7 +164,7 @@ Sets [speed](#speed) to 0: the locomotive slows to a stop as its decoder is set 
 
 **write_cv**(cv, value, pause: 500)
 
-Writes a value (0 to 255) into one of the locomotive's decoder settings (a CV, 1 to 1024) **on the main track**, while it runs: the usual way to tune its momentum, speed, or sound while watching it. A decoder takes the change only after two identical packets with nothing else for it in between, which the base station sees to. A decoder can't answer on the main, so nothing confirms the change: watch or listen for it (on the programming track, [dcc_base.write_cv](ref:dcc_base#write_cv) confirms it). Writes to one locomotive are at least `pause:` milliseconds apart (500 by default, 0 to 10000), as some decoders miss a write sent sooner; a write sooner than that waits.
+Writes a value (0 to 255) into one of the locomotive's decoder settings (a CV, 1 to 1024) **on the main track**, while it runs: the usual way to tune its momentum, speed, or sound while watching it. A decoder takes the change only after two identical packets with nothing else for it in between, which the base station sees to. A decoder can't answer on the main, so nothing confirms the change: watch or listen for it (on the programming track, [dcc_base.write_cv](ref:dcc_base#write_cv) confirms it). Writes to one locomotive are at least `pause:` milliseconds apart (500 by default, 0 to 10000), as some decoders miss a write sent sooner; a write sooner than that waits. `index: [16, 3]` writes CV 31 and CV 32 first (each a write of its own, with the pause between), for an indexed setting above 256 (see [dcc_base.read_cv](ref:dcc_base#read_cv)).
 
 CV 7 (the decoder's version) can't be written, and CV 8 isn't written here, since writing it is how many decoders are reset to their factory settings: both are a `range_error`, as is a number or value out of range. Writing the address settings (CV 1, 17, 18, 29) on the main changes which address the decoder answers to, while this object goes on sending to its old one.
 

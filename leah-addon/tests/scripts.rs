@@ -346,7 +346,7 @@ fn a_base_station_that_turns_its_power_off_says_so() {
 fn a_board_without_leahs_program_is_named_with_what_to_do() {
     for (mode, words) in [
         ("silent", "isn't running Leah's base station program: load it with load_dcc_program(\"{port}\", \"base\")"),
-        ("old", "runs an older program of Leah's (LEAH DCC BASE 4): load the new one with load_dcc_program(\"{port}\", \"base\")"),
+        ("old", "runs an older program of Leah's (LEAH DCC BASE 5): load the new one with load_dcc_program(\"{port}\", \"base\")"),
         ("reader", "runs Leah's reader program, not the base station's: are the base station's and the reader's ports the wrong way round?"),
     ] {
         let Some(boards) = fake_boards(&["--base", mode]) else {
@@ -742,7 +742,7 @@ foreach [function() {{ return $base.read_cv(7) }}, function() {{ return $base.re
         concat!(
             "[\"address\": 1, \"long\": false]\n",
             "[141, false]\n",
-            "hardware_error: dcc_base.read_cv(): no decoder answered on the programming track (the shield's B screws) (baseline 0 mA, highest 0 mA): is a locomotive on it, with clean wheels? A decoder answers by pulsing its motor, so it needs one\n",
+            "programming_error: dcc_base.read_cv(): no decoder answered on the programming track (the shield's B screws) (baseline 0 mA, highest 0 mA): is a locomotive on it, with clean wheels? A decoder answers by pulsing its motor, so it needs one\n",
             "range_error: dcc_base.read_cv(): a setting (CV) is 1 to 1024, not 0\n",
             "hardware_error: dcc_base.read_cv(): reading a decoder's settings needs Leah's base station board with its motor shield (its channel B is the programming track)\n",
         )
@@ -1042,4 +1042,50 @@ fn the_dcc_throttle_example_writes_a_setting_on_the_main() {
     let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(printed.contains("[true, false]\nCV 3 = 9 sent to locomotive 1 on the main"), "{printed}");
     assert!(said.lines().any(|l| l == "S 01 EC 02 09 E6"), "{said}");
+}
+
+#[test]
+fn settings_are_verified_and_bits_read_and_written_on_the_programming_track() {
+    // verify_cv (one question), read_cv_bit, write_cv_bit (confirmed), an indexed setting (CV 31
+    // and 32 written first), `tries:`, and programming_error for the decoder's side.
+    let log = std::env::temp_dir().join(format!("model-railroading-extras-log-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=3,29=6,3=5", "--log", log.to_str().unwrap()]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+print([$base.verify_cv(3, 5), $base.verify_cv(3, 6)])
+print([$base.read_cv_bit(29, 1), $base.read_cv_bit(29, 0)])
+$base.write_cv_bit(29, 5, true)
+print($base.read_cv(29))
+$base.write_cv(300, 77, index: [16, 3])
+print([$base.read_cv(31), $base.read_cv(32), $base.read_cv(300, index: [16, 3])])
+foreach [function() {{ return $base.read_cv(99, tries: 1) }}, function() {{ return $base.read_cv_bit(99, 2) }}, function() {{ $base.write_cv(300, 1, index: [16]) }}, function() {{ return $base.read_cv(1, tries: 0) }}, function() {{ $base.write_cv_bit(8, 3, true) }}] as $f {{
+    try {{
+        $f()
+    }} catch $e {{
+        print($e.type + ": " + $e.message)
+    }}
+}}
+"#,
+        boards.base
+    );
+    let extras = run("prog-extras", &script);
+    drop(boards);
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    assert!(extras.success, "{}", extras.stderr);
+    let no_answer = "no decoder answered on the programming track (the shield's B screws)";
+    let lines: Vec<&str> = extras.stdout.lines().collect();
+    assert_eq!(lines[..4], ["[true, false]", "[1, 0]", "38", "[16, 3, 77]"], "{}", extras.stdout);
+    assert!(lines[4].starts_with(&format!("programming_error: dcc_base.read_cv(): {no_answer}")), "{}", lines[4]);
+    assert!(lines[5].starts_with(&format!("programming_error: dcc_base.read_cv_bit(): {no_answer}")), "{}", lines[5]);
+    assert_eq!(lines[6], "type_error: dcc_base.write_cv()'s `index:` is the two index settings' values, CV 31's and CV 32's, like [16, 0], not an array");
+    assert_eq!(lines[7], "range_error: dcc_base.read_cv()'s `tries:` is 1 to 10, not 0");
+    assert!(lines[8].starts_with("range_error: dcc_base.write_cv_bit(): CV 8 isn't written here"), "{}", lines[8]);
+    // (One try only for CV 99 with `tries: 1`; three for the bit.)
+    assert_eq!(said.lines().filter(|l| *l == "R 99").count(), 1, "{said}");
+    assert_eq!(said.lines().filter(|l| *l == "U 99 2").count(), 3, "{said}");
 }

@@ -24,7 +24,8 @@ given) while the power is on: it says the current every half second, and turns t
 it is over the limit, as the board does (and then refuses to turn it on again for 2 seconds).
 `--cvs` gives the settings a decoder on the programming track answers with (`R <cv>`: "CV <cv> <value>",
 or "CV <cv> none (...)" for one not given), as the board's reading does (with the shield only);
-`W <cv> <value>` writes one ("W <cv> <value> ok"), or, with no `--cvs` (no decoder), is unconfirmed.
+`W <cv> <value>` writes one ("W <cv> <value> ok"), or, with no `--cvs` (no decoder), is unconfirmed;
+`V` verifies a value, `U` reads a bit, `Y` writes a bit, as the board does.
 `--restart-after` starts the base station again by itself that long after it first heard from the
 PC (as a brown-out does): its hello, its table emptied, its limit back to 1500, its power off.
 """
@@ -173,6 +174,31 @@ def main():
                     else:
                         say(base_master, f"CV {cv} none (baseline 0 mA, highest 0 mA)")
                     continue
+                elif c in "VUY":
+                    nums = [int(x) for x in line[1:].split()]
+                    cv = nums[0]
+                    if not shield:
+                        say(base_master, f"{c} {cv} off there is no motor shield")
+                        continue
+                    if power:
+                        power = False
+                        say(base_master, "OFF reading a setting: the main track's power is off while the programming track is on")
+                    time.sleep(0.1)
+                    if c == "V":
+                        say(base_master, f"V {cv} {nums[1]} {'yes' if cvs and cvs.get(cv) == nums[1] else 'no'}")
+                    elif c == "U":
+                        bit = nums[1]
+                        answer = str(cvs[cv] >> bit & 1) if cvs and cv in cvs else "none"
+                        say(base_master, f"U {cv} {bit} {answer}")
+                    else:
+                        bit, on = nums[1], nums[2]
+                        if cvs:
+                            old = cvs.get(cv, 0)
+                            cvs[cv] = old | 1 << bit if on else old & ~(1 << bit)
+                            say(base_master, f"Y {cv} {bit} {on} ok")
+                        else:
+                            say(base_master, f"Y {cv} {bit} {on} unconfirmed")
+                    continue
                 elif c == "W":
                     cv, value = (int(x) for x in line[1:].split()[:2])
                     if not shield:
@@ -215,7 +241,7 @@ def main():
         now = time.time()
         if mode in ("old", "reader") and now - last_old_hello > 0.5:
             last_old_hello = now
-            say(base_master, "LEAH DCC BASE 4" if mode == "old" else "LEAH DCC READER 1")
+            say(base_master, "LEAH DCC BASE 5" if mode == "old" else "LEAH DCC READER 1")
         if first_word is not None and drop_reader_after is not None and now - first_word > drop_reader_after and reader_master >= 0:
             os.close(reader_slave)
             os.close(reader_master)
@@ -235,7 +261,7 @@ def main():
             table.clear()
             waiting.clear()
             limit = 1500
-            say(base_master, "LEAH DCC BASE 5")
+            say(base_master, "LEAH DCC BASE 6")
         if power and shield and now - last_a >= 0.5:
             last_a = now
             say(base_master, f"A {drawing}")

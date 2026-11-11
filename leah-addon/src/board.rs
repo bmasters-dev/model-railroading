@@ -17,7 +17,7 @@ pub const BASE_PROGRAM: &str = include_str!("../boards/dcc_base/dcc_base.ino");
 pub const READER_PROGRAM: &str = include_str!("../boards/dcc_reader/dcc_reader.ino");
 
 /// What each program says as it starts.
-pub const BASE_HELLO: &str = "LEAH DCC BASE 5";
+pub const BASE_HELLO: &str = "LEAH DCC BASE 6";
 pub const READER_HELLO: &str = "LEAH DCC READER 1";
 
 /// How a port couldn't be opened, in words a person can act on.
@@ -192,14 +192,74 @@ impl ReadingTurn {
     /// is tried again, up to 3 times all told (a wheel losing contact for the 6 ms of an answer is
     /// enough to miss it, as other command stations find too).
     pub fn read_cv(&self, cv: i64) -> Result<i64, String> {
-        let mut tries = 0;
+        self.read_cv_tries(cv, 3)
+    }
+
+    /// As `read_cv`, tried up to `tries` times all told.
+    pub fn read_cv_tries(&self, cv: i64, tries: u32) -> Result<i64, String> {
+        let mut tried = 0;
         loop {
-            tries += 1;
+            tried += 1;
             match self.read_cv_once(cv) {
-                Err(e) if tries < 3 && e.starts_with("no decoder answered") => continue,
+                Err(e) if tried < tries && e.starts_with("no decoder answered") => continue,
                 done => return done,
             }
         }
+    }
+
+    /// Selects an indexed page first (CV 31 and 32, as sound decoders keep their higher settings), when
+    /// one is given.
+    pub fn select_index(&self, index: Option<(i64, i64)>) -> Result<(), String> {
+        if let Some((high, low)) = index {
+            self.write_cv(31, high)?;
+            self.write_cv(32, low)?;
+        }
+        Ok(())
+    }
+
+    /// Whether a setting holds a value (one question: much faster than reading it). Nothing answering
+    /// means another value, or no decoder: the two can't be told apart.
+    pub fn verify_cv(&self, cv: i64, value: i64) -> Result<bool, String> {
+        let answer = self.ask(&format!("V {cv} {value}"))?;
+        if let Some((_, why)) = answer.split_once(" off ") {
+            return Err(why.to_string());
+        }
+        Ok(answer.ends_with(" yes"))
+    }
+
+    /// Reads one bit of a setting (0 or 1), tried up to `tries` times when nothing answered.
+    pub fn read_cv_bit(&self, cv: i64, bit: i64, tries: u32) -> Result<i64, String> {
+        let mut tried = 0;
+        loop {
+            tried += 1;
+            let answer = self.ask(&format!("U {cv} {bit}"))?;
+            if let Some((_, why)) = answer.split_once(" off ") {
+                return Err(why.to_string());
+            }
+            match answer.rsplit(' ').next() {
+                Some("1") => return Ok(1),
+                Some("0") => return Ok(0),
+                _ if tried < tries => continue,
+                _ => return Err("no decoder answered on the programming track (the shield's B screws): is a locomotive on it, with clean wheels? A decoder answers by pulsing its motor, so it needs one".to_string()),
+            }
+        }
+    }
+
+    /// Writes one bit of a setting and has it confirmed; one not confirmed is written once more.
+    pub fn write_cv_bit(&self, cv: i64, bit: i64, on: bool) -> Result<(), String> {
+        for tried in 1..=2 {
+            let answer = self.ask(&format!("Y {cv} {bit} {}", u8::from(on)))?;
+            if let Some((_, why)) = answer.split_once(" off ") {
+                return Err(why.to_string());
+            }
+            if answer.ends_with(" ok") {
+                return Ok(());
+            }
+            if tried == 2 {
+                return Err("the decoder didn't confirm the new value: it may not have taken it (is the locomotive on the programming track, with clean wheels?)".to_string());
+            }
+        }
+        unreachable!()
     }
 
     fn read_cv_once(&self, cv: i64) -> Result<i64, String> {
@@ -507,7 +567,7 @@ fn run_link(base: Arc<Mutex<File>>, mut base_reading: File, mut reader: Option<F
                     if let Some(n) = after("limit").and_then(|n| n.parse().ok()) {
                         h.limit = Some(n);
                     }
-                } else if line.starts_with("CV ") || line.starts_with("W ") {
+                } else if ["CV ", "W ", "V ", "U ", "Y "].iter().any(|p| line.starts_with(p)) {
                     h.cv_answers.push_back(line);
                 } else if let Some(n) = line.strip_prefix("A ").and_then(|n| n.trim().parse().ok()) {
                     h.current = Some(n);

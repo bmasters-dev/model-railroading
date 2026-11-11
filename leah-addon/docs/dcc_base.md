@@ -74,9 +74,12 @@ $base.power = true
 | [clear_packets](#clear_packets) | | |
 | [close](#close) | | |
 | [read_address](#read_address) | in_background: boolean | array |
-| [read_cv](#read_cv) | cv as number, in_background: boolean | number |
+| [read_cv](#read_cv) | cv as number, index: array, tries: number, in_background: boolean | number |
+| [read_cv_bit](#read_cv_bit) | cv as number, bit as number, index: array, tries: number | number |
+| [verify_cv](#verify_cv) | cv as number, value as number, index: array | boolean |
 | [write_address](#write_address) | address as number, long: boolean, in_background: boolean | |
-| [write_cv](#write_cv) | cv as number, value as number, in_background: boolean | |
+| [write_cv](#write_cv) | cv as number, value as number, index: array, in_background: boolean | |
+| [write_cv_bit](#write_cv_bit) | cv as number, bit as number, on as boolean, index: array | |
 | [decoder](#decoder) | address as number, long: boolean | array |
 | [emergency_stop](#emergency_stop) | | |
 
@@ -276,6 +279,10 @@ Reads a decoder setting (a CV, 1 to 1024) of the locomotive on the **programming
 
 Reading uses the NMRA's service mode: the base station turns the **main track's power off** (A), powers the programming track, gives the decoder a moment to start (up to 1 A for its first second and a half, as a sound decoder's capacitors need), then asks it eight yes-or-no questions, one per bit, and checks the whole byte at the end. The decoder says "yes" by pulsing its motor for a few milliseconds, which the shield sees as a rise in current: so a decoder needs its motor connected, and clean wheels. A setting no decoder answered is asked again, three times in all, then it is a `hardware_error` saying what the base station saw: `no decoder answered on the programming track (the shield's B screws) (baseline 0 mA, highest 0 mA): is a locomotive on it, with clean wheels?`. After it, the main track's [power](#power) is off, with no warning (it is meant to be): turn it on again to drive. One reading at a time: a second one while one is going on is a `hardware_error`.
 
+**Errors:** what the decoder's side does wrong (nothing answered, a value not confirmed, the programming track cut off for a short) is a `programming_error`; the base station's own trouble (unreachable, its cable out) a `hardware_error`. `tries:` (1 to 10, 3 by default) says how many times a setting nobody answered is asked again.
+
+**Indexed settings:** sound decoders keep settings above 256 in pages chosen by CV 31 and CV 32 (ESU: CV 31 = 16, CV 32 the page; SoundTraxx, TCS, and others have their own; the decoder's manual says which). `index: [16, 3]` writes CV 31 = 16 and CV 32 = 3 first, then reads or writes the setting (CV 257 to 512 within that page).
+
 Some useful settings: CV 1 the short address, CV 7 the decoder's version, CV 8 its maker (141 is SoundTraxx, 151 ESU, 153 TCS, 129 Digitrax, 11 NCE), CV 29 its configuration, CV 17 and 18 its long address.
 
 ```leah check
@@ -284,6 +291,29 @@ print("the decoder's maker: " + $base.read_cv(8))
 ```
 
 With `in_background: true` it gives back `null` at once, and [on_read](#on_read) gets the answer (its `what` is the CV's number).
+
+---
+
+### read_cv_bit
+
+**read_cv_bit**(cv, bit, index: null, tries: 3) · number
+
+Reads one bit (0 to 7) of a setting on the programming track: 0 or 1. It asks the decoder "is it 1?" and then "is it 0?", so a missing decoder isn't taken for a 0 (a `programming_error`, after `tries:`). Much quicker than reading the whole setting.
+
+---
+
+### verify_cv
+
+**verify_cv**(cv, value, index: null) · boolean
+
+Asks the decoder on the programming track whether a setting holds `value`: one question, much quicker than [read_cv](#read_cv). `false` means it holds another value, or nothing answered (the two can't be told apart: read it to be sure).
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+if $base.verify_cv(3, 6) {
+    print("the acceleration is still 6")
+}
+```
 
 ---
 
@@ -318,6 +348,19 @@ print("acceleration: " + $base.read_cv(3))
 ```
 
 With `in_background: true` it gives back `null` at once, and [on_write](#on_write) says how it went (its `what` is the CV's number, its `value` the value written).
+
+---
+
+### write_cv_bit
+
+**write_cv_bit**(cv, bit, on, index: null)
+
+Writes one bit of a setting on the programming track, leaving the others as they are, and has the decoder confirm it (written once more if it didn't). `on` is `true` or `false` (or 1 or 0). CV 7 and 8 are refused, as for [write_cv](#write_cv).
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+$base.write_cv_bit(29, 0, true)     ` reverse the locomotive's direction (CV 29, bit 0)
+```
 
 ---
 

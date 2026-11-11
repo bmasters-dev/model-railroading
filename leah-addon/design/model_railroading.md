@@ -329,6 +329,19 @@ scanning session's finding). CV 7 and 8 are refused, as on the programming track
 settings row has **On the main**: Write goes to the locomotive being driven, with the power on, Read
 greyed out (nothing can answer on the main without RailCom).
 
+## Phase A, item 2: programming extras (built 2026-11-11, model-railroading#6)
+
+The base station's program v6 (`LEAH DCC BASE 6`) adds `V cv value` (verify byte: "yes"/"no"),
+`U cv bit` (asks "is it 1?" then "is it 0?": 1, 0, or "none", so no decoder isn't read as 0), and
+`Y cv bit 0|1` (write bit, then verify bit, twice at most). In Leah: `verify_cv`, `read_cv_bit`,
+`write_cv_bit` on the programming track; `index: [cv31, cv32]` on every read and write (both tracks;
+each index write a write of its own); `tries:` (1 to 10, 3) on readings; the decoder's side's
+failures are a `programming_error` (nothing answered, not confirmed, the programming track cut), the
+base station's a `hardware_error`. **Deferred (Claude's decision):** paged and register modes: every
+decoder of the last 20+ years has direct mode; they come back if someone's decoder needs them. A
+quicker index (keeping the programming track powered across the CV 31/32 writes and the access) is a
+later speed-up.
+
 ## Decided: no BiDiB (the owner, 2026-11-11)
 
 BiDiB's specification is free but supervised: the working group must be told before anything is

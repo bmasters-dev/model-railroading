@@ -15,7 +15,7 @@ use crate::board::{self, Link, Timing};
 use crate::dcc::{self, DecoderState, Reader, Target};
 
 const BASE_PROPS: &[&str] = &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"];
-const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address"];
+const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit"];
 const LOCO_PROPS: &[&str] = &["address", "long", "base", "speed", "direction"];
 const LOCO_FUNCS: &[&str] = &["set_function", "function", "stop", "emergency_stop", "write_cv", "write_cv_bit"];
 /// The least time between two writes on the main to one locomotive, unless `pause:` says otherwise:
@@ -100,6 +100,39 @@ fn bool_option(call: &Call, name: &str, default: bool) -> Result<bool, Error> {
         None => Ok(default),
         Some(Value::Bool(b)) => Ok(*b),
         Some(other) => Err(Error::type_error(format!("{}()'s `{name}:` is true or false, not {}", call.name, describe(other))).at(call.option_line(name))),
+    }
+}
+
+/// What went wrong on the programming track, as an error: a `programming_error` for the decoder's
+/// side (nothing answered, not confirmed, the programming track cut off), a `hardware_error` for the
+/// base station's (unreachable, its port gone).
+fn programming(what: &str, e: String) -> Error {
+    let kind = if e.starts_with("can't talk") || e.starts_with("the base station didn't answer") || e.contains("went away") { "hardware_error" } else { "programming_error" };
+    Error::new(kind, format!("{what}: {e}"))
+}
+
+/// `index: [high, low]`: CV 31 and 32 for an indexed setting (each 0 to 255), or None.
+fn index_option(call: &Call, what: &str) -> Result<Option<(i64, i64)>, Error> {
+    match call.option("index") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let parts: Vec<i64> = v.entries().iter().filter_map(|(_, x)| x.as_int()).collect();
+            if parts.len() != 2 || v.entries().len() != 2 || parts.iter().any(|n| !(0..=255).contains(n)) {
+                return Err(Error::type_error(format!("{what}'s `index:` is the two index settings' values, CV 31's and CV 32's, like [16, 0], not {}", describe(v))).at(call.option_line("index")));
+            }
+            Ok(Some((parts[0], parts[1])))
+        }
+    }
+}
+
+/// `tries:`, 1 to 10 (3 when not given).
+fn tries_option(call: &Call, what: &str) -> Result<u32, Error> {
+    match call.option("tries") {
+        None => Ok(3),
+        Some(v) => match v.as_int() {
+            Some(n) if (1..=10).contains(&n) => Ok(n as u32),
+            _ => Err(Error::range_error(format!("{what}'s `tries:` is 1 to 10, not {}", describe(v))).at(call.option_line("tries"))),
+        },
     }
 }
 
@@ -585,21 +618,23 @@ impl Object for DccBase {
             }
             "read_cv" => {
                 call.count_between(1, 1)?;
-                call.only_options(&["in_background"])?;
+                call.only_options(&["in_background", "index", "tries"])?;
                 let cv = whole("dcc_base.read_cv", "a setting's number", call.arg(0))?;
                 if !(1..=1024).contains(&cv) {
                     return Err(Error::range_error(format!("dcc_base.read_cv(): a setting (CV) is 1 to 1024, not {cv}")));
                 }
+                let index = index_option(call, "dcc_base.read_cv()")?;
+                let tries = tries_option(call, "dcc_base.read_cv()")?;
                 let background = bool_option(call, "in_background", false)?;
                 let turn = self.reading_turn("dcc_base.read_cv()", call)?;
                 if background {
-                    self.read_in_background(turn, Value::from(cv), move |t| t.read_cv(cv).map(Value::from));
+                    self.read_in_background(turn, Value::from(cv), move |t| t.select_index(index).and_then(|_| t.read_cv_tries(cv, tries)).map(Value::from));
                     return Ok(Value::Null);
                 }
-                let read = turn.read_cv(cv);
+                let read = turn.select_index(index).and_then(|_| turn.read_cv_tries(cv, tries));
                 drop(turn);
                 self.after_reading(call);
-                read.map(Value::from).map_err(|e| hardware(format!("dcc_base.read_cv(): {e}")))
+                read.map(Value::from).map_err(|e| programming("dcc_base.read_cv()", e))
             }
             "read_address" => {
                 call.count_between(0, 0)?;
@@ -614,11 +649,12 @@ impl Object for DccBase {
                 let read = turn.read_address();
                 drop(turn);
                 self.after_reading(call);
-                read.map(as_value).map_err(|e| hardware(format!("dcc_base.read_address(): {e}")))
+                read.map(as_value).map_err(|e| programming("dcc_base.read_address()", e))
             }
             "write_cv" => {
                 call.count_between(2, 2)?;
-                call.only_options(&["in_background"])?;
+                call.only_options(&["in_background", "index"])?;
+                let index = index_option(call, "dcc_base.write_cv()")?;
                 let cv = whole("dcc_base.write_cv", "a setting's number", call.arg(0))?;
                 let value = whole("dcc_base.write_cv", "a setting's value", call.arg(1))?;
                 if !(1..=1024).contains(&cv) {
@@ -635,13 +671,13 @@ impl Object for DccBase {
                 let background = bool_option(call, "in_background", false)?;
                 let turn = self.reading_turn("dcc_base.write_cv()", call)?;
                 if background {
-                    self.in_background("on_write", turn, Value::from(cv), move |t| t.write_cv(cv, value).map(|_| Value::from(value)));
+                    self.in_background("on_write", turn, Value::from(cv), move |t| t.select_index(index).and_then(|_| t.write_cv(cv, value)).map(|_| Value::from(value)));
                     return Ok(Value::Null);
                 }
-                let done = turn.write_cv(cv, value);
+                let done = turn.select_index(index).and_then(|_| turn.write_cv(cv, value));
                 drop(turn);
                 self.after_reading(call);
-                done.map(|_| Value::Null).map_err(|e| hardware(format!("dcc_base.write_cv(): {e}")))
+                done.map(|_| Value::Null).map_err(|e| programming("dcc_base.write_cv()", e))
             }
             "write_address" => {
                 call.count_between(1, 1)?;
@@ -664,7 +700,48 @@ impl Object for DccBase {
                 let done = turn.write_address(address, long);
                 drop(turn);
                 self.after_reading(call);
-                done.map(|_| Value::Null).map_err(|e| hardware(format!("dcc_base.write_address(): {e}")))
+                done.map(|_| Value::Null).map_err(|e| programming("dcc_base.write_address()", e))
+            }
+            "verify_cv" | "read_cv_bit" | "write_cv_bit" => {
+                let what = format!("dcc_base.{function}()");
+                let counts = match function { "verify_cv" | "read_cv_bit" => 2, _ => 3 };
+                call.count_between(counts, counts)?;
+                call.only_options(&["index", "tries"])?;
+                let cv = whole(&format!("dcc_base.{function}"), "a setting's number", call.arg(0))?;
+                if !(1..=1024).contains(&cv) {
+                    return Err(Error::range_error(format!("{what}: a setting (CV) is 1 to 1024, not {cv}")));
+                }
+                let second = whole(&format!("dcc_base.{function}"), if function == "verify_cv" { "a setting's value" } else { "a bit's number" }, call.arg(1))?;
+                if function == "verify_cv" && !(0..=255).contains(&second) {
+                    return Err(Error::range_error(format!("{what}: a setting's value is 0 to 255, not {second}")));
+                }
+                if function != "verify_cv" && !(0..=7).contains(&second) {
+                    return Err(Error::range_error(format!("{what}: a bit is 0 to 7, not {second}")));
+                }
+                let on = if function == "write_cv_bit" {
+                    match call.arg(2) {
+                        Value::Bool(b) => *b,
+                        Value::Int(0) => false,
+                        Value::Int(1) => true,
+                        other => return Err(Error::type_error(format!("{what}: the bit's value is true or false (or 1 or 0), not {}", describe(other)))),
+                    }
+                } else {
+                    false
+                };
+                if function == "write_cv_bit" && matches!(cv, 7 | 8) {
+                    return Err(Error::range_error(format!("{what}: CV {cv} isn't written here (CV 7 is the version; writing CV 8 resets many decoders)")));
+                }
+                let index = index_option(call, &what)?;
+                let tries = tries_option(call, &what)?;
+                let turn = self.reading_turn(&what, call)?;
+                let done = turn.select_index(index).and_then(|_| match function {
+                    "verify_cv" => turn.verify_cv(cv, second).map(Value::from),
+                    "read_cv_bit" => turn.read_cv_bit(cv, second, tries).map(Value::from),
+                    _ => turn.write_cv_bit(cv, second, on).map(|_| Value::Null),
+                });
+                drop(turn);
+                self.after_reading(call);
+                done.map_err(|e| programming(&what, e))
             }
             other => Err(call.unknown_function("dcc_base", other, BASE_FUNCS)),
         }
@@ -862,7 +939,8 @@ impl Object for Locomotive {
             "write_cv" | "write_cv_bit" => {
                 let bit = function == "write_cv_bit";
                 call.count_between(if bit { 3 } else { 2 }, if bit { 3 } else { 2 })?;
-                call.only_options(&["pause"])?;
+                call.only_options(&["pause", "index"])?;
+                let index = index_option(call, &format!("{what}()"))?;
                 let cv = whole(&what, "a setting's number", call.arg(0))?;
                 if !(1..=1024).contains(&cv) {
                     return Err(Error::range_error(format!("{what}(): a setting (CV) is 1 to 1024, not {cv}")));
@@ -898,15 +976,25 @@ impl Object for Locomotive {
                     }
                     (dcc::ops_write_byte(self.address, self.long, cv as u16, value as u8), format!("CV {cv} = {value} (on the main)"))
                 };
-                // (Spaced from the last write to this locomotive: some decoders miss one sent sooner.)
-                if let Some(last) = self.last_write.get() {
-                    let wait = std::time::Duration::from_millis(pause as u64).saturating_sub(last.elapsed());
-                    if !wait.is_zero() {
-                        std::thread::sleep(wait);
+                // (An indexed setting: CV 31 and 32 written first, each a write of its own.)
+                let mut writes = Vec::new();
+                if let Some((high, low)) = index {
+                    for (n, v) in [(31u16, high as u8), (32u16, low as u8)] {
+                        writes.push((dcc::ops_write_byte(self.address, self.long, n, v), format!("CV {n} = {v} (on the main)")));
                     }
                 }
-                self.base.send_times(packet, format!("{}: {words}", self.name()), None, 2, call)?;
-                self.last_write.set(Some(std::time::Instant::now()));
+                writes.push((packet, words));
+                for (packet, words) in writes {
+                    // (Spaced from the last write to this locomotive: some decoders miss one sent sooner.)
+                    if let Some(last) = self.last_write.get() {
+                        let wait = std::time::Duration::from_millis(pause as u64).saturating_sub(last.elapsed());
+                        if !wait.is_zero() {
+                            std::thread::sleep(wait);
+                        }
+                    }
+                    self.base.send_times(packet, format!("{}: {words}", self.name()), None, 2, call)?;
+                    self.last_write.set(Some(std::time::Instant::now()));
+                }
                 Ok(Value::Null)
             }
             other => Err(call.unknown_function("locomotive", other, LOCO_FUNCS)),

@@ -29,7 +29,7 @@
 //   X                  everything dropped, power off
 //   ?                  "STATE power on places 2 shield yes current 25 limit 1500"
 //   .                  nothing: only that the PC is still there
-// It answers "OK" or "ERR ..." to every line but ".", and starts with "LEAH DCC BASE 5". With the
+// It answers "OK" or "ERR ..." to every line but ".", and starts with "LEAH DCC BASE 6". With the
 // shield and the power on, it says the current every half second: "A 25" (mA).
 //
 // The programming track (design/model_railroading.md, "Stage 2"): the shield's channel B, as DCC-EX
@@ -39,6 +39,9 @@
 //                      answered), or "CV 1 off <why>"
 //   W 3 10             write 10 into setting 3, then verify it: "W 3 10 ok", "W 3 10 unconfirmed
 //                      (...)", or "W 3 off <why>"
+//   V 3 6              is setting 3 6? "V 3 6 yes" or "V 3 6 no" (no: another value, or no decoder)
+//   U 29 5             read bit 5 of setting 29: "U 29 5 1", "U 29 5 0", or "U 29 5 none"
+//   Y 29 5 1           write bit 5 of setting 29, then verify it: "Y 29 5 1 ok" or "... unconfirmed"
 // Reading turns the main track (A) off first, and B off again after: NMRA S-9.2.3's service mode,
 // direct mode. B gets the reset packet as its filler (never the idle packet, which would take a decoder
 // out of service mode), 260 of them first (about 1.6 s) for the decoder to start up (up to 1 A for
@@ -349,6 +352,54 @@ int write_cv(uint16_t cv, uint8_t value) {
   return 0;
 }
 
+// One service packet built for CV `cv` (1 to 1024): `kind` 0x74 verify byte, 0x78 bit (verify or write),
+// 0x7C write byte, with its third byte.
+Packet service_packet(uint8_t kind, uint16_t cv, uint8_t third) {
+  Packet p = {{(uint8_t)(kind | (0x03 & ((cv - 1) >> 8))), (uint8_t)((cv - 1) & 0xFF), third, 0}, 4};
+  p.bytes[3] = p.bytes[0] ^ p.bytes[1] ^ p.bytes[2];
+  return p;
+}
+
+// Verifies a whole setting: 1 the decoder said yes, 0 nothing answered (not that value, or no
+// decoder), -2 the programming track was cut.
+int verify_cv(uint16_t cv, uint8_t value) {
+  set_prog(true);
+  noInterrupts(); ack_peak = 0; interrupts();
+  if (!wait_packets(260)) return -2;
+  int a = service(service_packet(0x74, cv, value));
+  set_prog(false);
+  return a < 0 ? -2 : a;
+}
+
+// Reads one bit: asks "is it 1?" then "is it 0?". 1 or 0; -1 when neither was answered; -2 cut.
+int read_cv_bit(uint16_t cv, uint8_t bit) {
+  set_prog(true);
+  noInterrupts(); ack_peak = 0; interrupts();
+  if (!wait_packets(260)) return -2;
+  int one = service(service_packet(0x78, cv, 0xE8 | bit));
+  if (one < 0) return -2;
+  int zero = one ? 0 : service(service_packet(0x78, cv, 0xE0 | bit));
+  set_prog(false);
+  if (zero < 0) return -2;
+  return one ? 1 : (zero ? 0 : -1);
+}
+
+// Writes one bit, then verifies it (twice at most). 1 confirmed, 0 not, -2 cut.
+int write_cv_bit(uint16_t cv, uint8_t bit, uint8_t on) {
+  set_prog(true);
+  noInterrupts(); ack_peak = 0; interrupts();
+  if (!wait_packets(260)) return -2;
+  if (service(service_packet(0x78, cv, 0xF0 | (on << 3) | bit)) < 0) return -2;
+  if (!wait_packets(30)) return -2;
+  for (uint8_t tries = 0; tries < 2; tries++) {
+    int a = service(service_packet(0x78, cv, 0xE0 | (on << 3) | bit));
+    if (a < 0) return -2;
+    if (a) { set_prog(false); return 1; }
+  }
+  set_prog(false);
+  return 0;
+}
+
 // Says, after a reading or a writing, why the programming track was cut (the rest of its answer line).
 void say_prog_cut() {
   uint8_t why;
@@ -460,6 +511,29 @@ void obey(const char *line) {
       Serial.println(cut ? "B off cut" : "B done");
       return;
     }
+    case 'V': case 'U': case 'Y': {
+      // V cv value: verify a setting ("V 3 6 yes" / "no"); U cv bit: read a bit ("U 29 5 1" / "0" /
+      // "none"); Y cv bit 0|1: write a bit and verify it ("Y 29 5 1 ok" / "unconfirmed").
+      char what = line[0];
+      long cv = read_number(c);
+      long second = read_number(c);
+      long third = what == 'Y' ? read_number(c) : 0;
+      if (cv < 1 || cv > 1024) { Serial.println("ERR a setting (CV) is 1 to 1024"); return; }
+      if (what == 'V' && (second < 0 || second > 255)) { Serial.println("ERR a setting's value is 0 to 255"); return; }
+      if (what != 'V' && (second < 0 || second > 7)) { Serial.println("ERR a bit is 0 to 7"); return; }
+      if (what == 'Y' && (third < 0 || third > 1)) { Serial.println("ERR a bit's value is 0 or 1"); return; }
+      if (!shield) { Serial.print(what); Serial.print(" "); Serial.print(cv); Serial.println(" off there is no motor shield"); return; }
+      if (power) Serial.println("OFF reading a setting: the main track's power is off while the programming track is on");
+      int done = what == 'V' ? verify_cv(cv, second) : what == 'U' ? read_cv_bit(cv, second) : write_cv_bit(cv, second, third);
+      set_prog(false);
+      Serial.print(what); Serial.print(" "); Serial.print(cv); Serial.print(" "); Serial.print(second);
+      if (what == 'Y') { Serial.print(" "); Serial.print(third); }
+      if (done == -2) { say_prog_cut(); return; }
+      if (what == 'V') Serial.println(done ? " yes" : " no");
+      else if (what == 'U') { if (done < 0) Serial.println(" none"); else { Serial.print(" "); Serial.println(done); } }
+      else Serial.println(done ? " ok" : " unconfirmed");
+      return;
+    }
     case 'W': {
       long cv = read_number(c);
       long value = read_number(c);
@@ -530,7 +604,7 @@ void obey(const char *line) {
       return;
     }
   }
-  Serial.println("ERR unknown: K, D, S, +, -, L, R, W, B, X, ?, or .");
+  Serial.println("ERR unknown: K, D, S, +, -, L, R, W, V, U, Y, B, X, ?, or .");
 }
 
 // Whether the shield is there: its sense resistor holds A0 low against the internal pull-up.
@@ -573,7 +647,7 @@ void setup() {
   TIMSK1 = _BV(TOIE1);
   interrupts();
   Serial.begin(115200);
-  Serial.println("LEAH DCC BASE 5");
+  Serial.println("LEAH DCC BASE 6");
 }
 
 void loop() {
