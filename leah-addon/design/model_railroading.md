@@ -312,7 +312,9 @@ or `CV <cv> off <why>`; B's filler is the reset packet, never the idle one. Lear
   refused (read only) and so is CV 8 (writing it resets many decoders to their factory settings: a
   deliberate reset can come later, its own function). The throttle's **Decoder settings** row (CV,
   its name for the usual ones, the value, Read, Write), with the power off only. Operations-mode
-  programming on the main is next.
+  programming on the main is next. **On the owner's bench** (the same morning, from the throttle in
+  the IDE, addon 0.5.0): CV 3 read as 6 (the acceleration), the same 6 written back, and the decoder
+  confirmed it: writing proven on a real decoder (SoundTraxx), nothing changed in it.
 
 ## Rules to keep (agreed in principle)
 
