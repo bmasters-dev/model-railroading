@@ -199,6 +199,36 @@ Step 2 of the safe ladder. Decided by Claude (the owner can overrule):
   in**, which the window says plainly. The board list shows a board that is plugged in but not
   allowed as such, not as missing.
 
+## Stage 1c: the motor shield, no locomotive (decided 2026-11-10)
+
+Step 3 of the safe ladder: the EX-MotorShield8874 on the Mega, a 12 V supply (the owner has some) in
+its barrel jack, and no locomotive. Decided by Claude (the owner can overrule):
+
+- **The pins**, as DCC-EX's own definition of the shield gives them
+  (`MotorDriver(3, 12, UNUSED_PIN, 9, A0, 5.08, 5000, A4)` on a 5 V, 10-bit board): channel A's
+  direction is **pin 12** (the signal Leah's program already makes there), its output on and off
+  **pin 3** (the track power), its brake **pin 9** (held low), its current **A0** at **5.08 mA a
+  step**, its fault line **A4** (low on a fault). The shield's regulator gives the Mega 7.2 V on VIN by
+  default; USB on as well is fine (DCC-EX's page), but never a supply in the Mega's own barrel jack too.
+- **The base station's program, version 3** (`LEAH DCC BASE 3`): finds the shield as it starts (the
+  internal pull-up on A0 reads high with nothing there, low against the shield's sense resistor), so
+  the same program serves the bench without a shield (no current check, no false cut-offs from a
+  floating A0). With it: the power on and off on pin 3 (the signal joined first, the output cut
+  first); the current sampled every millisecond, said every half second (`A 25`), smoothed; **the
+  power off when it stays over the limit for 5 ms**, or the fault line stays low for 5 ms, saying why
+  (`OFF the current was over the limit (...)`). The limit (`L <mA>`, 10 to 5000) is 1500 mA at the
+  start, and Leah sets it again on connecting. `STATE` adds `shield yes`, `current`, `limit`.
+- **In Leah:** `dcc_base`'s `shield` (read-only), `current` (mA; 0 with the power off, null without a
+  shield or simulated), `current_limit` (settable). The bench app shows the current and lets the
+  limit be chosen, a 15 mA one among them for trying the cut-off, and shows the board's reason when it
+  turns the power off.
+- **The bench test, with the owner's parts:** the meter on the shield's channel A outputs (DC volts
+  near 0: never stuck at DC; AC volts near the supply's: the square wave); the owner's **470 ohm,
+  0.5 W resistor** across them (12 V / 470 = 25 mA, 0.3 W: warm at most) read by Leah as about 25 mA;
+  then the limit set to 15 mA, and the power must go off by itself. No dead short (no power resistor
+  on hand, and the cut-off is proved without one). The USB isolator is on order: until it comes, the
+  Mega's USB goes to the PC as DCC-EX's own users do.
+
 ## Rules to keep (agreed in principle)
 
 - **Emergency stop** always works, from code and from every throttle control.

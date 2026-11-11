@@ -14,7 +14,7 @@ use leah_addon_kit::{Call, Error, Object, Value};
 use crate::board::{self, Link, Timing};
 use crate::dcc::{self, DecoderState, Reader, Target};
 
-const BASE_PROPS: &[&str] = &["simulate", "port", "reader", "power", "packets", "timing"];
+const BASE_PROPS: &[&str] = &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"];
 const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close"];
 const LOCO_PROPS: &[&str] = &["address", "long", "base", "speed", "direction"];
 const LOCO_FUNCS: &[&str] = &["set_function", "function", "stop", "emergency_stop"];
@@ -23,6 +23,9 @@ const LOCO_FUNCS: &[&str] = &["set_function", "function", "stop", "emergency_sto
 const KEPT: usize = 200;
 /// The places in the board's refresh table.
 const PLACES: u8 = 32;
+/// The current limit a base station starts with, and the least and most it takes (mA).
+const DEFAULT_LIMIT: i64 = 1500;
+const LIMITS: std::ops::RangeInclusive<i64> = 10..=5000;
 /// How long a board may take to say it runs Leah's program (it starts again as its port opens).
 const START_LIMIT: Duration = Duration::from_secs(5);
 
@@ -55,6 +58,10 @@ pub struct DccBase {
     places: Cell<u32>,
     places_of: RefCell<BTreeMap<(u16, bool), SharedPlaces>>,
     timing: RefCell<Option<Timing>>,
+    /// On a board: whether the motor shield is on it, the current it last said (mA), and its limit.
+    shield: Cell<bool>,
+    current: Cell<i64>,
+    limit: Cell<i64>,
     /// Why the board can't be used any more (its port went away), once it can't.
     lost: RefCell<Option<String>>,
 }
@@ -114,6 +121,9 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
         places: Cell::new(0),
         places_of: RefCell::new(BTreeMap::new()),
         timing: RefCell::new(None),
+        shield: Cell::new(false),
+        current: Cell::new(0),
+        limit: Cell::new(DEFAULT_LIMIT),
         lost: RefCell::new(None),
     };
     if simulate {
@@ -128,8 +138,10 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
         };
         let link = Link::open(&port, reader_port.as_deref()).map_err(|e| hardware(format!("dcc_base(): {}", e.message)))?;
         link.wait_for_programs(START_LIMIT).map_err(|e| hardware(format!("dcc_base(): {e}")))?;
-        // (A clean start: nothing kept from before, the track power off.)
-        link.say("X").map_err(|e| hardware(format!("dcc_base(): can't talk to the board on {port}: {e}")))?;
+        // (A clean start: nothing kept from before, the track power off, the current limit the
+        // usual one.)
+        link.say("X").and_then(|_| link.say(&format!("L {DEFAULT_LIMIT}"))).map_err(|e| hardware(format!("dcc_base(): can't talk to the board on {port}: {e}")))?;
+        link.heard.lock().unwrap_or_else(|p| p.into_inner()).limit = None;
         base.port = Some(port);
         base.reader_port = reader_port;
         *base.link.borrow_mut() = Some(link);
@@ -164,6 +176,15 @@ impl DccBase {
         let Some(link) = self.link.borrow().as_ref().map(|l| l.heard.clone()) else { return };
         let (packets, said, timing, gone, reader_gone) = {
             let mut h = link.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(shield) = h.shield {
+                self.shield.set(shield);
+            }
+            if let Some(limit) = h.limit.take() {
+                self.limit.set(limit);
+            }
+            if let Some(current) = h.current.take() {
+                self.current.set(current);
+            }
             (std::mem::take(&mut h.packets), std::mem::take(&mut h.base_said), h.timing.clone(), h.gone.clone(), h.reader_gone.take())
         };
         if timing.is_some() {
@@ -366,6 +387,9 @@ impl Object for DccBase {
             "power" => Ok(self.power.get().into()),
             "packets" => Ok(self.packets()),
             "timing" => Ok(self.timing_value()),
+            "shield" => Ok(self.shield.get().into()),
+            "current" => Ok(if self.shield.get() { Value::from(if self.power.get() { self.current.get() } else { 0 }) } else { Value::Null }),
+            "current_limit" => Ok(self.limit.get().into()),
             other => Err(call.unknown_property("dcc_base", other, BASE_PROPS)),
         }
     }
@@ -388,7 +412,19 @@ impl Object for DccBase {
                 }
                 other => Err(Error::type_error(format!("a dcc_base's `power` is true or false, not {}", describe(&other)))),
             },
-            "simulate" | "port" | "reader" | "packets" | "timing" => Err(Error::type_error(format!("a dcc_base's `{property}` can be read but not set"))),
+            "current_limit" => {
+                let n = value.as_int().ok_or_else(|| Error::type_error(format!("a dcc_base's `current_limit` is a whole number of milliamps, not {}", describe(&value))))?;
+                if !LIMITS.contains(&n) {
+                    return Err(Error::range_error(format!("a dcc_base's `current_limit` is {} to {} mA, not {n}", LIMITS.start(), LIMITS.end())));
+                }
+                if !self.simulated() {
+                    self.take_heard(call);
+                    self.with_link("a dcc_base's `current_limit`", |l| l.say(&format!("L {n}")))?;
+                }
+                self.limit.set(n);
+                Ok(())
+            }
+            "simulate" | "port" | "reader" | "packets" | "timing" | "shield" | "current" => Err(Error::type_error(format!("a dcc_base's `{property}` can be read but not set"))),
             other => Err(call.unknown_property("dcc_base", other, BASE_PROPS)),
         }
     }

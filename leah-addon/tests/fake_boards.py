@@ -9,6 +9,7 @@ without a line; while its power is on, what it sends reaches the reader, which s
 
     python3 fake_boards.py [--base normal|silent|old|reader] [--log FILE] [--cut-after SECONDS]
                            [--drop-reader-after SECONDS] [--drop-base-after SECONDS]
+                           [--shield] [--current MILLIAMPS]
 
 It prints the two ports' paths ("BASE /dev/pts/5" and "READER /dev/pts/6") and runs until its
 standard input closes. `--base silent` is a board that says nothing (not running Leah's program);
@@ -17,6 +18,9 @@ standard input closes. `--base silent` is a board that says nothing (not running
 the wrong way round). `--cut-after` turns the power off that long after it was turned on, as the
 board's safety does when the PC goes quiet. `--drop-reader-after` and `--drop-base-after` close that
 board's port that long after the base station first heard from the PC, as a pulled cable does.
+`--shield` is a base station with the motor shield on it, its track drawing `--current` mA (0 if not
+given) while the power is on: it says the current every half second, and turns the power off when
+it is over the limit, as the board does.
 """
 
 import os
@@ -41,6 +45,10 @@ def main():
     drop_reader_after = None
     drop_base_after = None
     first_word = None
+    shield = False
+    drawing = 0
+    limit = 1500
+    last_a = 0.0
     args = sys.argv[1:]
     while args:
         a = args.pop(0)
@@ -54,6 +62,10 @@ def main():
             drop_reader_after = float(args.pop(0))
         elif a == "--drop-base-after":
             drop_base_after = float(args.pop(0))
+        elif a == "--shield":
+            shield = True
+        elif a == "--current":
+            drawing = int(args.pop(0))
     log = open(log_path, "a", buffering=1) if log_path else None
 
     base_master, base_slave = os.openpty()
@@ -127,8 +139,15 @@ def main():
                     table.clear()
                     waiting.clear()
                 elif c == "?":
-                    say(base_master, f"STATE power {'on' if power else 'off'} places {len(table)}")
+                    now_ma = drawing if shield and power else 0
+                    say(base_master, f"STATE power {'on' if power else 'off'} places {len(table)} shield {'yes' if shield else 'no'} current {now_ma} limit {limit}")
                     continue
+                elif c == "L":
+                    n = int(line[1:].split()[0])
+                    if not 10 <= n <= 5000:
+                        say(base_master, "ERR a current limit is 10 to 5000 mA")
+                        continue
+                    limit = n
                 elif c in "KDS":
                     words = line[1:].split()
                     if c in "KD":
@@ -150,7 +169,7 @@ def main():
         now = time.time()
         if mode in ("old", "reader") and now - last_old_hello > 0.5:
             last_old_hello = now
-            say(base_master, "LEAH DCC BASE 1" if mode == "old" else "LEAH DCC READER 1")
+            say(base_master, "LEAH DCC BASE 2" if mode == "old" else "LEAH DCC READER 1")
         if first_word is not None and drop_reader_after is not None and now - first_word > drop_reader_after and reader_master >= 0:
             os.close(reader_slave)
             os.close(reader_master)
@@ -160,6 +179,12 @@ def main():
             os.close(base_master)
             base_master = -1
             power = False
+        if power and shield and drawing > limit:
+            power = False
+            say(base_master, f"OFF the current was over the limit ({drawing} mA, the limit {limit} mA): is something shorting the track?")
+        if power and shield and now - last_a >= 0.5:
+            last_a = now
+            say(base_master, f"A {drawing}")
         if power and (now - last_word > 3 or (cut_after is not None and now - powered_at > cut_after)):
             power = False
             say(base_master, "OFF no word from the PC for 3 seconds")

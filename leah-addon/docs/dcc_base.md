@@ -7,7 +7,7 @@ A DCC base station, the command station's heart: it sends the packets the decode
 A base station is one of two kinds:
 
 - **Simulated** (`simulate: true`): no board, no power on any rails. Each packet is turned into the signal a base station would put on the rails, and a simulated decoder for each address reads it back from that signal, as a decoder does.
-- **Leah's base station board** (a port): an Arduino Mega running Leah's base station program makes the real DCC signal, its timing from the board's own hardware timer. A second board, the **reader** (an Arduino Uno or Nano running Leah's reader program), can read that signal back as a decoder would and tell Leah what it heard and how long each half-bit lasted. So far the board's signal is 5 V logic on its pin 12, for checking on the bench: a motor shield to put it on the rails comes later. [Model railroading](ref:Model railroading#leahs-base-station-board) says how to join the two boards.
+- **Leah's base station board** (a port): an Arduino Mega running Leah's base station program makes the real DCC signal, its timing from the board's own hardware timer. With an **EX-MotorShield8874** on it, the signal goes onto the rails, and the board watches the track's current and turns the power off by itself on a short; without the shield, the signal is 5 V logic on its pin 12, for checking on the bench. A second board, the **reader** (an Arduino Uno or Nano running Leah's reader program), can read the signal back as a decoder would and tell Leah what it heard and how long each half-bit lasted. [Model railroading](ref:Model railroading#leahs-base-station-board) says how to join them.
 
 What each decoder understood (the simulated ones, or the one the reader stands for) is given by [decoder](#decoder). A base station isn't shown and needs no window.
 
@@ -51,16 +51,19 @@ $loco.speed = 40
 $base.power = true
 ```
 
-**On a board**, a locomotive's speed and its lights (F0 to F4) are kept in the board's refresh table and sent again and again, as command stations do, so a decoder that missed one packet, or a locomotive put on the track later, still gets them; every other packet is sent at once, three times. The table holds 16 locomotives. **Safety**: while the track power is on, Leah tells the board every second that it is still there; after 3 seconds without a word (the program ended or crashed, or the cable came out) the board turns the track power off by itself, and Leah says so with a warning when it next hears from the board.
+**On a board**, it starts with a [current_limit](#current_limit) of 1500 mA. A locomotive's speed and its lights (F0 to F4) are kept in the board's refresh table and sent again and again, as command stations do, so a decoder that missed one packet, or a locomotive put on the track later, still gets them; every other packet is sent at once, three times. The table holds 16 locomotives. **Safety**: while the track power is on, Leah tells the board every second that it is still there; after 3 seconds without a word (the program ended or crashed, or the cable came out) the board turns the track power off by itself, and Leah says so with a warning when it next hears from the board. With the motor shield, it also turns the power off when the track's current stays over the [current_limit](#current_limit) for 5 ms (a short: a coin on the rails, a derailed wheel), and when the shield's driver reports a fault (too hot, or a short it caught itself), each with a warning saying why: `the base station turned the track power off by itself: the current was over the limit (2210 mA, the limit 1500 mA): is something shorting the track?`.
 
 ## Properties
 
 | Name | Type | Read-only |
 |---|---|---|
+| [current](#current) | number | ✓ |
+| [current_limit](#current_limit) | number | |
 | [packets](#packets) | array | ✓ |
 | [port](#port) | text | ✓ |
 | [power](#power) | boolean | |
 | [reader](#reader) | text | ✓ |
+| [shield](#shield) | boolean | ✓ |
 | [simulate](#simulate) | boolean | ✓ |
 | [timing](#timing) | array | ✓ |
 
@@ -74,6 +77,29 @@ $base.power = true
 | [emergency_stop](#emergency_stop) | | |
 
 ## Property descriptions
+
+### current
+
+**current** · number · read-only
+
+The track's current in milliamps, as the motor shield measured it (smoothed, said by the board every half second): 0 with the power off. `null` without a shield, and on a simulated base station. Its steps are about 5 mA.
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+$base.power = true
+sleep(1000)
+print("the track draws " + $base.current + " mA")
+```
+
+---
+
+### current_limit
+
+**current_limit** · number
+
+The current, in milliamps, over which the board turns the track power off by itself (held for 5 ms): 10 to 5000, 1500 at the start. Outside that is a `range_error`, and anything but a whole number a `type_error`. A low limit is a safe way to try the cut-off: a 470 Ω resistor across the track at 12 V draws about 25 mA, so with the limit at 15 the power goes off. On a simulated base station it is kept but does nothing.
+
+---
 
 ### packets
 
@@ -129,6 +155,14 @@ The track power: `true` puts the signal on the rails (the simulated ones, or the
 **reader** · text · read-only
 
 The reader board's port, or `null` when there is none.
+
+---
+
+### shield
+
+**shield** · boolean · read-only
+
+`true` when the base station board has its motor shield on it (the board finds it as its program starts), so its signal goes onto the rails and its [current](#current) is measured; `false` without one, and on a simulated base station.
 
 ---
 

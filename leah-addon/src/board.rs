@@ -17,7 +17,7 @@ pub const BASE_PROGRAM: &str = include_str!("../boards/dcc_base/dcc_base.ino");
 pub const READER_PROGRAM: &str = include_str!("../boards/dcc_reader/dcc_reader.ino");
 
 /// What each program says as it starts.
-pub const BASE_HELLO: &str = "LEAH DCC BASE 2";
+pub const BASE_HELLO: &str = "LEAH DCC BASE 3";
 pub const READER_HELLO: &str = "LEAH DCC READER 1";
 
 /// How a port couldn't be opened, in words a person can act on.
@@ -121,6 +121,11 @@ pub struct Heard {
     /// The packets the reader heard, oldest first, not yet taken.
     pub packets: VecDeque<Vec<u8>>,
     pub timing: Option<Timing>,
+    /// From the base station: whether the motor shield is on it, its current limit (mA), and the
+    /// current it last said (mA, said every half second while the power is on).
+    pub shield: Option<bool>,
+    pub limit: Option<i64>,
+    pub current: Option<i64>,
     /// The first line each board said as it started (or "STATE ..." / "T ..." when it said nothing
     /// as it started).
     pub base_hello: Option<String>,
@@ -341,6 +346,16 @@ fn run_link(base: Arc<Mutex<File>>, mut base_reading: File, mut reader: Option<F
                     h.base_hellos += 1;
                 } else if line.starts_with("STATE ") {
                     h.states += 1;
+                    let words: Vec<&str> = line.split_whitespace().collect();
+                    let after = |key: &str| words.iter().position(|w| *w == key).and_then(|i| words.get(i + 1)).copied();
+                    if let Some(yes) = after("shield") {
+                        h.shield = Some(yes == "yes");
+                    }
+                    if let Some(n) = after("limit").and_then(|n| n.parse().ok()) {
+                        h.limit = Some(n);
+                    }
+                } else if let Some(n) = line.strip_prefix("A ").and_then(|n| n.trim().parse().ok()) {
+                    h.current = Some(n);
                 } else if line != "OK" {
                     h.base_said.push_back(line);
                 }

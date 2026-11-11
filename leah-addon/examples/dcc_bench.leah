@@ -12,7 +12,7 @@ $shown = ""
 ` (The programs being loaded, kept so their on_finished still runs.)
 $loading = []
 
-$win = window(title: "DCC bench", width: 860, height: 600, minimum_width: 780, minimum_height: 560)
+$win = window(title: "DCC bench", width: 860, height: 660, minimum_width: 780, minimum_height: 620)
 
 ` -- the boards --
 $boards_box = group_box(left: 20, top: 16, width: 820, height: 170, text: "The boards", lock_right: true)
@@ -56,6 +56,18 @@ $win.add($headlight)
 $stop = button(left: 20, top: $top + 144, width: 260, height: 44, text: "Emergency stop", enabled: false)
 $win.add($stop)
 
+` -- the track's current, with the motor shield --
+$current_text = label(left: 20, top: $top + 202, width: 260, height: 40, multi_line: true, text: "")
+$win.add($current_text)
+$limit_label = label(left: 300, top: $top + 214, width: 150, text: "Cut off over:")
+$win.add($limit_label)
+$limit = popup_menu(left: 400, top: $top + 210, width: 260, enabled: false)
+foreach [[15, "15 mA (to test the cut-off)"], [250, "250 mA"], [500, "500 mA"], [1000, "1 A"], [1500, "1.5 A (the usual)"], [3000, "3 A"]] as [$ma, $words] {
+    $limit.add_row($words, tag: $ma)
+}
+$limit.select_row_with_tag(1500)
+$win.add($limit)
+
 ` -- what the reader heard --
 $heard_box = group_box(left: 300, top: $top - 12, width: 540, height: 212, text: "What the reader heard", lock_right: true)
 $win.add($heard_box)
@@ -67,7 +79,7 @@ $verdict = label(left: 316, top: $top + 146, width: 510, height: 40, lock_right:
 $win.add($verdict)
 
 ` -- the packets sent --
-$packets = list_box(left: 20, top: $top + 210, width: 820, height: 130, column_count: 3, has_header: true, _
+$packets = list_box(left: 20, top: $top + 260, width: 820, height: 130, column_count: 3, has_header: true, _
     column_widths: "150, *, 70", lock_right: true, lock_bottom: true)
 $packets.headers = ["Bytes", "Meaning", "Heard"]
 $win.add($packets)
@@ -174,8 +186,8 @@ $load.on_click = function() {
 }
 
 function set_throttle_enabled($on) {
-    global $power, $throttle, $reverse, $headlight, $stop
-    foreach [$power, $throttle, $reverse, $headlight, $stop] as $c {
+    global $power, $throttle, $reverse, $headlight, $stop, $limit
+    foreach [$power, $throttle, $reverse, $headlight, $stop, $limit] as $c {
         $c.enabled = $on
     }
 }
@@ -203,6 +215,7 @@ $connect.on_click = function() {
             return
         }
         $loco = locomotive(3)
+        $limit.select_row_with_tag($base.current_limit)
         $throttle.value = 0
         $reverse.value = false
         $headlight.value = false
@@ -217,6 +230,13 @@ $power.on_value_changed = function() {
     global $base, $power
     if $base != null {
         $base.power = $power.value
+    }
+}
+
+$limit.on_selection_changed = function() {
+    global $base, $limit
+    if $base != null and $limit.selected_row_tag != null {
+        $base.current_limit = $limit.selected_row_tag
     }
 }
 
@@ -261,14 +281,22 @@ function range_words($range) {
 ` Every 200 ms: what the reader heard, how long the half-bits were, and the packets sent.
 $clock = timer(period: 200, run_mode: "multiple")
 $clock.on_run = function() {
-    global $base, $loco, $power, $decoder_text, $timing_text, $verdict, $packets, $shown
+    global $base, $loco, $power, $decoder_text, $timing_text, $verdict, $packets, $shown, $status, $current_text
     if $base == null {
         $timing_text.text = ""
         $verdict.text = ""
         return
     }
+    if $base.current == null {
+        $current_text.text = "No motor shield: the signal is 5 V logic on pin 12."
+    } else {
+        $current_text.text = "Track current: " + $base.current + " mA" + (if $base.power then "" else " (power off)")
+    }
     if $power.value and not $base.power {
-        ` (The base station turned the power off by itself: the PC had gone quiet.)
+        ` (The base station turned the power off by itself: a short, its driver's fault, or the PC gone
+        ` quiet. Its reason is the warning Leah gave.)
+        $w = last_warning()
+        $status.text = if $w == null then "The base station turned the track power off." else $w["message"]
         $power.value = false
     }
     $state = $base.decoder($loco.address)

@@ -1,6 +1,14 @@
-// Leah's DCC base station (design/model_railroading.md, "Stage 1b"): the NMRA S-9.1 signal on pin 12
-// (Timer1's output OC1B, so every edge comes from the hardware timer). In the safe ladder's step 2 it is
-// 5 V logic only, with no motor shield.
+// Leah's DCC base station (design/model_railroading.md, "Stage 1b" and "Stage 1c"): the NMRA S-9.1
+// signal on pin 12 (Timer1's output OC1B, so every edge comes from the hardware timer), for an Arduino
+// Mega 2560. With the EX-MotorShield8874 on it, the signal drives the shield's channel A (its
+// direction input is pin 12), which puts it on the rails; without the shield, pin 12 is 5 V logic, for
+// checking on the bench.
+//
+// The shield's channel A, as DCC-EX's own definition of it gives the pins: pin 3 turns its output on
+// and off (the track power), pin 9 is its brake (held low: off), A0 its current (5.08 mA a step on a
+// 5 V, 10-bit Mega), A4 its fault line (pulled up; low on a fault). Whether the shield is there is
+// found as the program starts: with the internal pull-up on, A0 reads high with nothing on it, and low
+// with the shield's sense resistor to ground.
 //
 // A 1 is 58 us high then 58 us low; a 0 is 100 us high then 100 us low. Timer1 runs at 2 MHz
 // (0.5 us ticks) in fast PWM with its top in OCR1A: each period is one bit. At the end of each bit the
@@ -16,14 +24,18 @@
 //   K 3 03 3F A9 95    keep this packet in the refresh table's place 3 (0 to 31)
 //   D 3                drop place 3
 //   S 00 41 41         send this packet now, three times, ahead of the refresh table
-//   +   -              track power on, off (off: pin 12 held low, nothing sent)
+//   +   -              track power on, off (off: pin 3 low and pin 12 held low, nothing sent)
+//   L 1500             the current limit, in mA (10 to 5000; 1500 at the start)
 //   X                  everything dropped, power off
-//   ?                  "STATE power on places 2"
+//   ?                  "STATE power on places 2 shield yes current 25 limit 1500"
 //   .                  nothing: only that the PC is still there
-// It answers "OK" or "ERR ..." to every line but ".", and starts with "LEAH DCC BASE 2".
+// It answers "OK" or "ERR ..." to every line but ".", and starts with "LEAH DCC BASE 3". With the
+// shield and the power on, it says the current every half second: "A 25" (mA).
 //
-// Safety: with the power on, three seconds without a line from the PC (the program on the PC ended,
-// crashed, or lost the cable) turn the power off, and it says "OFF no word from the PC for 3 seconds".
+// Safety: the power turns off by itself, saying why with "OFF ...", when
+//   - three seconds pass without a line from the PC (it ended, crashed, or lost the cable);
+//   - the current stays over the limit for 5 ms (a short on the track: a coin, a derailed wheel);
+//   - the shield's driver says it has a fault (too hot, or a short it caught itself).
 
 #include <Arduino.h>
 
@@ -31,6 +43,9 @@ const uint16_t ONE_TOP = 231, ONE_MIDDLE = 115;    // 232 ticks = 116 us, high f
 const uint16_t ZERO_TOP = 399, ZERO_MIDDLE = 199;  // 400 ticks = 200 us, high for 200 ticks = 100 us
 const uint8_t MOST_BYTES = 6, PLACES = 32, WAITING = 8, PREAMBLE = 14, TIMES_NOW = 3;
 const uint32_t QUIET_LIMIT = 3000;
+const uint8_t SIGNAL_PIN = 12, POWER_PIN = 3, BRAKE_PIN = 9, SENSE_PIN = A0, FAULT_PIN = A4;
+const float MA_PER_STEP = 5.08;
+const uint8_t OVER_FOR_MS = 5;
 
 struct Packet { uint8_t bytes[MOST_BYTES]; uint8_t count; };
 
@@ -39,6 +54,9 @@ Packet table[PLACES];                // count 0: the place is free
 Packet waiting[WAITING];             // the packets to send now, a ring
 volatile uint8_t waiting_head = 0, waiting_tail = 0;
 volatile bool power = false;
+bool shield = false;
+uint16_t limit_ma = 1500;
+float current_ma = 0;                // smoothed, for saying
 
 // The interrupt's own: the packet going out and where in it, and a packet sent now while it repeats.
 Packet going, again;
@@ -84,8 +102,21 @@ ISR(TIMER1_OVF_vect) {
 void set_power(bool on) {
   noInterrupts();
   power = on;
-  if (on) TCCR1A |= _BV(COM1B1); else { TCCR1A &= ~_BV(COM1B1); digitalWrite(12, LOW); }
+  if (on) {
+    TCCR1A |= _BV(COM1B1);                                            // the signal first...
+    digitalWrite(POWER_PIN, HIGH);                                    // ...then the shield's output on
+  } else {
+    digitalWrite(POWER_PIN, LOW);                                     // the shield's output off first
+    TCCR1A &= ~_BV(COM1B1);
+    digitalWrite(SIGNAL_PIN, LOW);
+  }
   interrupts();
+}
+
+void power_off_because(const char *why) {
+  set_power(false);
+  Serial.print("OFF ");
+  Serial.println(why);
 }
 
 int hex_digit(char c) {
@@ -113,12 +144,13 @@ bool read_packet(const char *c, Packet &p) {
   return true;
 }
 
-// A place's number from the text (moving past it); -1 when it isn't one.
-int read_place(const char *&c) {
+// A whole number from the text (moving past it); -1 when there is none.
+long read_number(const char *&c) {
   while (*c == ' ') c++;
-  int n = 0, digits = 0;
-  while (*c >= '0' && *c <= '9') { n = n * 10 + (*c - '0'); c++; digits++; }
-  return digits && n < PLACES ? n : -1;
+  long n = 0;
+  int digits = 0;
+  while (*c >= '0' && *c <= '9' && digits < 6) { n = n * 10 + (*c - '0'); c++; digits++; }
+  return digits ? n : -1;
 }
 
 void obey(const char *line) {
@@ -139,12 +171,22 @@ void obey(const char *line) {
       uint8_t used = 0;
       for (uint8_t i = 0; i < PLACES; i++) if (table[i].count) used++;
       Serial.print("STATE power "); Serial.print(power ? "on" : "off");
-      Serial.print(" places "); Serial.println(used);
+      Serial.print(" places "); Serial.print(used);
+      Serial.print(" shield "); Serial.print(shield ? "yes" : "no");
+      Serial.print(" current "); Serial.print(shield && power ? (long)(current_ma + 0.5) : 0);
+      Serial.print(" limit "); Serial.println(limit_ma);
+      return;
+    }
+    case 'L': {
+      long n = read_number(c);
+      if (n < 10 || n > 5000) { Serial.println("ERR a current limit is 10 to 5000 mA"); return; }
+      limit_ma = n;
+      Serial.println("OK");
       return;
     }
     case 'K': case 'D': {
-      int place = read_place(c);
-      if (place < 0) { Serial.println("ERR a place is 0 to 31"); return; }
+      long place = read_number(c);
+      if (place < 0 || place >= PLACES) { Serial.println("ERR a place is 0 to 31"); return; }
       Packet p = {{0}, 0};
       if (line[0] == 'K' && !read_packet(c, p)) return;
       noInterrupts(); table[place] = p; interrupts();
@@ -162,12 +204,27 @@ void obey(const char *line) {
       return;
     }
   }
-  Serial.println("ERR unknown: K, D, S, +, -, X, ?, or .");
+  Serial.println("ERR unknown: K, D, S, +, -, L, X, ?, or .");
+}
+
+// Whether the shield is there: its sense resistor holds A0 low against the internal pull-up.
+bool find_shield() {
+  pinMode(SENSE_PIN, INPUT_PULLUP);
+  delay(5);
+  int with_pullup = analogRead(SENSE_PIN);
+  pinMode(SENSE_PIN, INPUT);
+  return with_pullup < 600;
 }
 
 void setup() {
-  pinMode(12, OUTPUT);
-  digitalWrite(12, LOW);
+  pinMode(POWER_PIN, OUTPUT);
+  digitalWrite(POWER_PIN, LOW);
+  pinMode(BRAKE_PIN, OUTPUT);
+  digitalWrite(BRAKE_PIN, LOW);
+  pinMode(FAULT_PIN, INPUT_PULLUP);
+  pinMode(SIGNAL_PIN, OUTPUT);
+  digitalWrite(SIGNAL_PIN, LOW);
+  shield = find_shield();
   going = IDLE;
   noInterrupts();
   TCCR1A = _BV(WGM11) | _BV(WGM10);                 // fast PWM, top OCR1A; OC1B joined when powered
@@ -176,13 +233,14 @@ void setup() {
   TIMSK1 = _BV(TOIE1);
   interrupts();
   Serial.begin(115200);
-  Serial.println("LEAH DCC BASE 2");
+  Serial.println("LEAH DCC BASE 3");
 }
 
 void loop() {
   static char line[48];
   static uint8_t used = 0;
-  static uint32_t last_word = 0;
+  static uint32_t last_word = 0, last_sample = 0, last_said = 0;
+  static uint8_t over_ms = 0, fault_ms = 0;
   while (Serial.available()) {
     char c = Serial.read();
     if (c == '\r') continue;
@@ -190,7 +248,35 @@ void loop() {
     else if (used < sizeof line - 1) line[used++] = c;
   }
   if (power && millis() - last_word > QUIET_LIMIT) {
-    set_power(false);
-    Serial.println("OFF no word from the PC for 3 seconds");
+    power_off_because("no word from the PC for 3 seconds");
+  }
+  if (shield && millis() != last_sample) {
+    last_sample = millis();
+    if (power) {
+      float now_ma = analogRead(SENSE_PIN) * MA_PER_STEP;
+      current_ma += (now_ma - current_ma) * 0.05;
+      over_ms = now_ma > limit_ma ? over_ms + 1 : 0;
+      fault_ms = digitalRead(FAULT_PIN) == LOW ? fault_ms + 1 : 0;
+      if (over_ms >= OVER_FOR_MS) {
+        over_ms = 0;
+        set_power(false);                                             // first, then the words
+        Serial.print("OFF the current was over the limit (");
+        Serial.print((long)now_ma);
+        Serial.print(" mA, the limit ");
+        Serial.print(limit_ma);
+        Serial.println(" mA): is something shorting the track?");
+      } else if (fault_ms >= OVER_FOR_MS) {
+        fault_ms = 0;
+        power_off_because("the motor shield's driver reported a fault (too hot, or a short it caught itself)");
+      } else if (millis() - last_said >= 500) {
+        last_said = millis();
+        Serial.print("A ");
+        Serial.println((long)(current_ma + 0.5));
+      }
+    } else {
+      current_ma = 0;
+      over_ms = 0;
+      fault_ms = 0;
+    }
   }
 }

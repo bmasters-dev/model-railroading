@@ -325,7 +325,7 @@ try {{
         "[false, true, true, false, true]\n[40, \"forward\", true]\n[[57.5, 58], [99.5, 100], 0]\n[true, true]\n0\ntrue\nfalse\na dcc_base's `power`: the base station is closed\n"
     );
     let lines: Vec<&str> = said.lines().filter(|l| *l != ".").collect();
-    assert_eq!(lines, ["?", "X", "K 0 03 3F A9 95", "K 1 03 90 93", "+", "S 00 41 41", "K 0 03 3F 81 BD", "X"], "{said}");
+    assert_eq!(lines, ["?", "X", "L 1500", "K 0 03 3F A9 95", "K 1 03 90 93", "+", "S 00 41 41", "K 0 03 3F 81 BD", "X"], "{said}");
     assert!(said.lines().filter(|l| *l == ".").count() >= 4, "the PC said it was there every second:\n{said}");
 }
 
@@ -346,7 +346,7 @@ fn a_base_station_that_turns_its_power_off_says_so() {
 fn a_board_without_leahs_program_is_named_with_what_to_do() {
     for (mode, words) in [
         ("silent", "isn't running Leah's base station program: load it with load_dcc_program(\"{port}\", \"base\")"),
-        ("old", "runs an older program of Leah's (LEAH DCC BASE 1): load the new one with load_dcc_program(\"{port}\", \"base\")"),
+        ("old", "runs an older program of Leah's (LEAH DCC BASE 2): load the new one with load_dcc_program(\"{port}\", \"base\")"),
         ("reader", "runs Leah's reader program, not the base station's: are the base station's and the reader's ports the wrong way round?"),
     ] {
         let Some(boards) = fake_boards(&["--base", mode]) else {
@@ -496,15 +496,23 @@ fn the_dcc_bench_example_drives_the_boards_and_asks_for_permission() {
     };
     let driving = on_screen(
         format!("{}\t2341\t0042\t\n{}\t1a86\t7523\tUSB Serial\n", boards.base, boards.reader),
-        "call_later(300, function() {\n    global $connect\n    $connect.click()\n    call_later(3500, function() {\n        global $power, $throttle, $headlight\n        $power.value = true\n        $throttle.value = 64\n        $headlight.value = true\n        call_later(1800, function() {\n            global $decoder_text, $verdict\n            print($decoder_text.text)\n            print($verdict.text)\n            quit()\n        })\n    })\n})\n",
+        "call_later(300, function() {\n    global $connect\n    $connect.click()\n    call_later(3500, function() {\n        global $power, $throttle, $headlight\n        $power.value = true\n        $throttle.value = 64\n        $headlight.value = true\n        call_later(1800, function() {\n            global $decoder_text, $verdict, $current_text\n            print($decoder_text.text)\n            print($verdict.text)\n            print($current_text.text)\n            quit()\n        })\n    })\n})\n",
     );
     let asking = on_screen(
         format!("{}\t1a86\t7523\tUSB Serial\n", shut.display()),
         "call_later(300, function() {\n    global $status, $give_access\n    print($give_access.visible)\n    print($status.text)\n    quit()\n})\n",
     );
     drop(boards);
+    let Some(shielded) = fake_boards(&["--shield", "--current", "25"]) else { return };
+    let cutting = on_screen(
+        format!("{}\t2341\t0042\t\n{}\t1a86\t7523\tUSB Serial\n", shielded.base, shielded.reader),
+        "call_later(300, function() {\n    global $connect\n    $connect.click()\n    call_later(3500, function() {\n        global $power\n        $power.value = true\n        call_later(1200, function() {\n            global $current_text, $limit\n            print($current_text.text)\n            $limit.select_row_with_tag(15)\n            call_later(1200, function() {\n                global $status, $power\n                print($power.value)\n                print($status.text)\n                quit()\n            })\n        })\n    })\n})\n",
+    );
+    drop(shielded);
     let _ = std::fs::remove_dir_all(&dir);
     assert!(driving.contains("Decoder 3 heard: speed 64, forward, headlight on.\nWithin the NMRA's limits for a command station"), "{driving}");
+    assert!(driving.contains("No motor shield: the signal is 5 V logic on pin 12."), "{driving}");
+    assert!(cutting.contains("Track current: 25 mA\nfalse\nthe base station turned the track power off by itself: the current was over the limit (25 mA, the limit 15 mA)"), "{cutting}");
     assert!(asking.contains("true\nLinux needs your permission before apps can talk to a board over USB."), "{asking}");
 }
 
@@ -556,8 +564,55 @@ fn locomotives_at_one_address_share_their_places_in_the_refresh_table() {
     let said = std::fs::read_to_string(&log).unwrap_or_default();
     let _ = std::fs::remove_file(&log);
     assert!(run.success, "{}", run.stderr);
-    let lines: Vec<&str> = said.lines().filter(|l| *l != "." && *l != "?").collect();
+    let lines: Vec<&str> = said.lines().filter(|l| *l != "." && *l != "?" && !l.starts_with("L ")).collect();
     // (Locomotive 3's two objects keep their speed in place 0; locomotive 4 has places 2 and 3; once
     // both of 3's are let go, its places are dropped, and 4's as the script ends.)
     assert_eq!(lines, ["X", "K 0 03 3F D1 ED", "K 0 03 3F 80 BC", "K 2 04 3F 8B B0", "D 0", "D 1", "D 2", "D 3", "X"], "{said}");
+}
+
+#[test]
+fn a_base_station_with_its_motor_shield_reads_its_current_and_cuts_off_over_the_limit() {
+    // The shield draws 25 mA (the bench's 470 ohm resistor across the track at 12 V): read, and under
+    // the usual limit; with the limit set to 15 mA the board turns the power off and says why.
+    let Some(boards) = fake_boards(&["--shield", "--current", "25"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+print([$base.shield, $base.current, $base.current_limit])
+$base.power = true
+sleep(1200)
+print([$base.power, $base.current])
+$base.current_limit = 15
+sleep(600)
+print([$base.power, $base.current, $base.current_limit])
+foreach [function() {{ $base.current_limit = 5 }}, function() {{ $base.current_limit = "lots" }}, function() {{ $base.shield = false }}] as $f {{
+    try {{
+        $f()
+    }} catch $e {{
+        print($e.type + ": " + $e.message)
+    }}
+}}
+$sim = dcc_base(simulate: true)
+print([$sim.shield, $sim.current, $sim.current_limit])
+"#,
+        boards.base
+    );
+    let run = run("shield", &script);
+    drop(boards);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        concat!(
+            "[true, 0, 1500]\n",
+            "[true, 25]\n",
+            "[false, 0, 15]\n",
+            "range_error: a dcc_base's `current_limit` is 10 to 5000 mA, not 5\n",
+            "type_error: a dcc_base's `current_limit` is a whole number of milliamps, not \"lots\"\n",
+            "type_error: a dcc_base's `shield` can be read but not set\n",
+            "[false, null, 1500]\n",
+        )
+    );
+    assert!(run.stderr.contains("the base station turned the track power off by itself: the current was over the limit (25 mA, the limit 15 mA): is something shorting the track?"), "{}", run.stderr);
 }
