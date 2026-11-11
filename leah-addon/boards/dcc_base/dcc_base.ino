@@ -29,8 +29,22 @@
 //   X                  everything dropped, power off
 //   ?                  "STATE power on places 2 shield yes current 25 limit 1500"
 //   .                  nothing: only that the PC is still there
-// It answers "OK" or "ERR ..." to every line but ".", and starts with "LEAH DCC BASE 3". With the
+// It answers "OK" or "ERR ..." to every line but ".", and starts with "LEAH DCC BASE 4". With the
 // shield and the power on, it says the current every half second: "A 25" (mA).
+//
+// The programming track (design/model_railroading.md, "Stage 2"): the shield's channel B, as DCC-EX
+// has it (pin 11 its output on and off, pin 13 its direction, which is Timer1's OC1C, so the same
+// timer gives it the same signal; pin 8 its brake, held low; A1 its current; A5 its fault line).
+//   R 1                read setting (CV) 1 on the programming track: "CV 1 3", "CV 1 none" (nothing
+//                      answered), or "CV 1 off <why>"
+// Reading turns the main track (A) off first, and B off again after: NMRA S-9.2.3's service mode,
+// direct mode. B gets the reset packet as its filler (never the idle packet, which would take a decoder
+// out of service mode), 260 of them first (about 1.6 s) for the decoder to start up (up to 1 A for
+// its first 1.5 s), then for each of the 8 bits:
+// 5 resets (the current's baseline measured over them), 5 "verify bit is 1" packets, 6 resets, a
+// decoder's answer, its acknowledgment, being 60 mA or more over the baseline for about 4 ms; then
+// the whole byte verified the same way. B's current is limited to 250 mA (S-9.2.3) and its fault line
+// watched, as A's are.
 //
 // Safety: the power turns off by itself, saying why with "OFF ...", when
 //   - three seconds pass without a line from the PC (it ended, crashed, or lost the cable);
@@ -57,11 +71,40 @@ const uint16_t ZERO_TOP = 399, ZERO_MIDDLE = 199;  // 400 ticks = 200 us, high f
 const uint8_t MOST_BYTES = 6, PLACES = 32, WAITING = 8, PREAMBLE = 14, TIMES_NOW = 3;
 const uint32_t QUIET_LIMIT = 3000;
 const uint8_t SIGNAL_PIN = 12, POWER_PIN = 3, BRAKE_PIN = 9, SENSE_PIN = A0, FAULT_PIN = A4;
+const uint8_t PROG_SIGNAL_PIN = 13, PROG_POWER_PIN = 11, PROG_BRAKE_PIN = 8, PROG_FAULT_PIN = A5;
 const float MA_PER_STEP = 5.08;
 
 struct Packet { uint8_t bytes[MOST_BYTES]; uint8_t count; };
 
 const Packet IDLE = {{0xFF, 0x00, 0xFF}, 3};
+const Packet RESET = {{0x00, 0x00, 0x00}, 3};
+// The programming track: whether it is on (and the main track off), the service packet to send and
+// how many times more, the packets sent so far (counted by the timer's interrupt), and the analog
+// reader's watch for a decoder's acknowledgment.
+volatile bool prog = false;
+Packet prog_packet;
+volatile uint8_t prog_left = 0;
+volatile uint16_t packets_sent = 0;
+// An acknowledgment: about 2 ms all told (19 samples) 60 mA or more over the baseline within the
+// window, not necessarily in one run (a wheel flickering on its rail breaks a run); the byte verified
+// at the end guards against a false one.
+const uint16_t PROG_LIMIT_STEPS = 250 / 5.08, PROG_START_LIMIT_STEPS = 1000 / 5.08, ACK_STEPS = 60 / 5.08, ACK_SAMPLES = 19;
+// For the first 1.5 s (about 14,400 samples) the programming track takes up to 1 A: a sound decoder's
+// stay-alive capacitors and amplifier draw far more than 250 mA as it starts, for most of a second
+// (782 and 833 mA were cut on the owner's bench, 2026-11-11, at 20 and 400 ms), as DCC-EX lets it
+// too (its "prog boost").
+const uint16_t PROG_START_SAMPLES = 14400;
+// On the programming track the limit must be over for about 50 ms all told before it cuts: a
+// decoder's acknowledgment is its motor pulsed for 6 ms, often at its full stall current (about 800 mA
+// on the owner's bench, which cut every reading at the first "yes" with 5 ms). A short is still cut in
+// about 2 ms by the driver's own fault line.
+const uint16_t PROG_TRIP_COUNT = 960;
+volatile uint16_t prog_samples = 0;
+volatile bool ack_watch = false, ack = false;
+volatile uint16_t ack_threshold = 0, ack_run = 0, ack_peak = 0;
+uint16_t last_baseline = 0;
+volatile uint32_t base_sum = 0;
+volatile uint16_t base_count = 0;
 Packet table[PLACES];                // count 0: the place is free
 Packet waiting[WAITING];             // the packets to send now, a ring
 volatile uint8_t waiting_head = 0, waiting_tail = 0;
@@ -86,6 +129,11 @@ int8_t bit_at = -1;                  // -1: the start bit before the byte
 bool idle_next = false;              // true after every packet but an idle one: an idle one comes next
 
 void next_packet() {
+  packets_sent++;
+  if (prog) {                                                         // service mode: resets between
+    if (prog_left > 0) { prog_left--; going = prog_packet; } else going = RESET;
+    return;
+  }
   if (idle_next) { going = IDLE; idle_next = false; return; }       // between every two packets
   if (times_left > 0) { times_left--; going = again; idle_next = true; return; }
   if (waiting_head != waiting_tail) {
@@ -117,7 +165,8 @@ uint8_t next_bit() {
 }
 
 ISR(TIMER1_OVF_vect) {
-  if (next_bit()) { OCR1A = ONE_TOP; OCR1B = ONE_MIDDLE; } else { OCR1A = ZERO_TOP; OCR1B = ZERO_MIDDLE; }
+  if (next_bit()) { OCR1A = ONE_TOP; OCR1B = ONE_MIDDLE; OCR1C = ONE_MIDDLE; }
+  else { OCR1A = ZERO_TOP; OCR1B = ZERO_MIDDLE; OCR1C = ZERO_MIDDLE; }
 }
 
 // Cuts the power from inside an interrupt (interrupts are off already).
@@ -129,9 +178,37 @@ void cut_power_now(uint8_t why) {
   tripped = why;
 }
 
-// The analog reader, running freely on A0: each sample the track's current.
+// Cuts the programming track from inside an interrupt.
+void cut_prog_now(uint8_t why) {
+  PORTB &= ~_BV(PB5);                                                 // pin 11 low: channel B's output off
+  TCCR1A &= ~_BV(COM1C1);
+  PORTB &= ~_BV(PB7);                                                 // pin 13 low
+  prog = false;
+  ADMUX = _BV(REFS0);                                                 // back to A0
+  tripped = why;
+}
+
+// The analog reader, running freely on A0 (A1 while the programming track is on): each sample the
+// track's current.
 ISR(ADC_vect) {
   uint16_t steps = ADC;
+  if (prog) {
+    if (since_on < BLANK_SAMPLES) { since_on++; return; }
+    if (!(PINF & _BV(PF5))) fault_count += 2; else if (fault_count) fault_count--;           // A5 low: a fault
+    if (fault_count >= FAULT_COUNT) { tripped_steps = steps; fault_count = 0; cut_prog_now(4); return; }
+    uint16_t prog_limit = PROG_LIMIT_STEPS;
+    if (prog_samples < PROG_START_SAMPLES) { prog_samples++; prog_limit = PROG_START_LIMIT_STEPS; }
+    if (steps > prog_limit) over_count += 2; else if (over_count) over_count--;
+    if (over_count >= PROG_TRIP_COUNT) { tripped_steps = steps; over_count = 0; cut_prog_now(3); return; }
+    if (ack_watch) {
+      if (steps > ack_peak) ack_peak = steps;
+      if (steps > ack_threshold && ++ack_run >= ACK_SAMPLES) ack = true;
+    } else {
+      base_sum += steps;
+      base_count++;
+    }
+    return;
+  }
   if (!power) return;
   sum_steps += steps;
   sum_count++;
@@ -157,6 +234,92 @@ void set_power(bool on) {
     digitalWrite(SIGNAL_PIN, LOW);
   }
   interrupts();
+}
+
+// The programming track on (the main track off first) or off.
+void set_prog(bool on) {
+  if (on) set_power(false);
+  noInterrupts();
+  if (on) {
+    over_count = 0;
+    fault_count = 0;
+    since_on = 0;
+    prog_samples = 0;
+    ack_watch = false;
+    base_sum = 0;
+    base_count = 0;
+    ADMUX = _BV(REFS0) | 1;                                           // A1: channel B's current
+    prog_left = 0;
+    prog = true;
+    TCCR1A |= _BV(COM1C1);
+    digitalWrite(PROG_POWER_PIN, HIGH);
+  } else {
+    digitalWrite(PROG_POWER_PIN, LOW);
+    TCCR1A &= ~_BV(COM1C1);
+    digitalWrite(PROG_SIGNAL_PIN, LOW);
+    prog = false;
+    ADMUX = _BV(REFS0);                                               // A0: channel A's
+  }
+  interrupts();
+}
+
+uint16_t sent_so_far() {
+  noInterrupts();
+  uint16_t n = packets_sent;
+  interrupts();
+  return n;
+}
+
+// Waits while `count` packets go out; false when the programming track was cut meanwhile.
+bool wait_packets(uint16_t count) {
+  uint16_t start = sent_so_far();
+  while ((uint16_t)(sent_so_far() - start) < count) {
+    if (!prog) return false;
+  }
+  return prog;
+}
+
+// Sends a service packet as S-9.2.3 has it and says whether the decoder acknowledged it: the baseline
+// over 5 resets, then 5 of the packet and 6 resets while watching for the acknowledgment. -1: the
+// programming track was cut.
+int service(const Packet &p) {
+  noInterrupts(); base_sum = 0; base_count = 0; interrupts();
+  if (!wait_packets(5)) return -1;
+  noInterrupts();
+  uint16_t baseline = base_count ? base_sum / base_count : 0;
+  last_baseline = baseline;
+  ack_threshold = baseline + ACK_STEPS;
+  ack = false;
+  ack_run = 0;
+  ack_watch = true;
+  prog_packet = p;
+  prog_left = 5;
+  interrupts();
+  bool ok = wait_packets(11);
+  noInterrupts(); ack_watch = false; bool heard = ack; interrupts();
+  return ok ? heard : -1;
+}
+
+// Reads a setting (CV 1 to 1024) on the programming track: its value, -1 when nothing acknowledged,
+// -2 when the programming track was cut (its reason said by the loop).
+int read_cv(uint16_t cv) {
+  set_prog(true);
+  noInterrupts(); ack_peak = 0; interrupts();
+  if (!wait_packets(260)) return -2;                                  // the decoder starts up (about 1.6 s)
+  uint8_t high = 0x03 & ((cv - 1) >> 8), low = (cv - 1) & 0xFF, value = 0;
+  for (uint8_t bit = 0; bit < 8; bit++) {
+    Packet p = {{(uint8_t)(0x78 | high), low, (uint8_t)(0xE8 | bit), 0}, 4};   // verify bit `bit` is 1
+    p.bytes[3] = p.bytes[0] ^ p.bytes[1] ^ p.bytes[2];
+    int a = service(p);
+    if (a < 0) return -2;
+    if (a) value |= 1 << bit;
+  }
+  Packet v = {{(uint8_t)(0x74 | high), low, value, 0}, 4};                      // verify the byte
+  v.bytes[3] = v.bytes[0] ^ v.bytes[1] ^ v.bytes[2];
+  int a = service(v);
+  set_prog(false);
+  if (a < 0) return -2;
+  return a ? value : -1;
 }
 
 void power_off_because(const char *why) {
@@ -213,6 +376,7 @@ void obey(const char *line) {
       return;
     case '-': set_power(false); Serial.println("OK"); return;
     case 'X':
+      set_prog(false);
       set_power(false);
       noInterrupts();
       for (uint8_t i = 0; i < PLACES; i++) table[i].count = 0;
@@ -228,6 +392,63 @@ void obey(const char *line) {
       Serial.print(" shield "); Serial.print(shield ? "yes" : "no");
       Serial.print(" current "); Serial.print(shield && power ? (long)(current_ma + 0.5) : 0);
       Serial.print(" limit "); Serial.println(limit_ma);
+      return;
+    }
+    case 'B': {
+      // The programming track on for that many seconds (1 to 30) with reset packets, its current said
+      // four times a second ("B 812"), limited to 1 A throughout: for checking a decoder and the
+      // track on the bench.
+      long seconds = read_number(c);
+      if (seconds < 1 || seconds > 30) { Serial.println("ERR the programming track is on for 1 to 30 seconds"); return; }
+      if (!shield) { Serial.println("ERR there is no motor shield"); return; }
+      set_prog(true);
+      noInterrupts(); prog_samples = 0; interrupts();
+      uint32_t end = millis() + seconds * 1000UL, next = millis();
+      while ((long)(millis() - end) < 0 && prog) {
+        noInterrupts(); prog_samples = 0; base_sum = 0; base_count = 0; interrupts();
+        while ((long)(millis() - next) < 0 && prog) {}
+        next += 250;
+        uint32_t sum; uint16_t n;
+        noInterrupts(); sum = base_sum; n = base_count; base_sum = 0; base_count = 0; interrupts();
+        Serial.print("B "); Serial.println(n ? (long)((float)sum / n * MA_PER_STEP) : 0);
+      }
+      bool cut = !prog;
+      set_prog(false);
+      Serial.println(cut ? "B off cut" : "B done");
+      return;
+    }
+    case 'R': {
+      long cv = read_number(c);
+      if (cv < 1 || cv > 1024) { Serial.println("ERR a setting (CV) is 1 to 1024"); return; }
+      if (!shield) { Serial.print("CV "); Serial.print(cv); Serial.println(" off there is no motor shield"); return; }
+      if (power) Serial.println("OFF reading a setting: the main track's power is off while the programming track is on");
+      int value = read_cv(cv);
+      set_prog(false);
+      Serial.print("CV "); Serial.print(cv);
+      if (value >= 0) { Serial.print(" "); Serial.println(value); }
+      else if (value == -1) {
+        uint16_t peak;
+        noInterrupts(); peak = ack_peak; interrupts();
+        Serial.print(" none (baseline ");
+        Serial.print((long)(last_baseline * MA_PER_STEP));
+        Serial.print(" mA, highest ");
+        Serial.print((long)(peak * MA_PER_STEP));
+        Serial.println(" mA)");
+      }
+      else {
+        uint8_t why;
+        uint16_t steps;
+        noInterrupts(); why = tripped; steps = tripped_steps; tripped = 0; interrupts();
+          if (why == 3) {
+          Serial.print(" off the programming track's current was over its limit (");
+          Serial.print((long)(steps * MA_PER_STEP));
+          Serial.println(" mA, the limit 250 mA, 1 A as the decoder starts): is something shorting it?");
+        } else if (why == 4) {
+          Serial.println(" off the motor shield's channel B driver reported a fault (too hot, a short it caught itself, or no supply in the shield's jack)");
+        } else {
+          Serial.println(" off the programming track was cut off");
+        }
+      }
       return;
     }
     case 'L': {
@@ -260,7 +481,7 @@ void obey(const char *line) {
       return;
     }
   }
-  Serial.println("ERR unknown: K, D, S, +, -, L, X, ?, or .");
+  Serial.println("ERR unknown: K, D, S, +, -, L, R, X, ?, or .");
 }
 
 // Whether the shield is there: its sense resistor holds A0 low against the internal pull-up.
@@ -278,6 +499,13 @@ void setup() {
   pinMode(BRAKE_PIN, OUTPUT);
   digitalWrite(BRAKE_PIN, LOW);
   pinMode(FAULT_PIN, INPUT_PULLUP);
+  pinMode(PROG_POWER_PIN, OUTPUT);
+  digitalWrite(PROG_POWER_PIN, LOW);
+  pinMode(PROG_BRAKE_PIN, OUTPUT);
+  digitalWrite(PROG_BRAKE_PIN, LOW);
+  pinMode(PROG_FAULT_PIN, INPUT_PULLUP);
+  pinMode(PROG_SIGNAL_PIN, OUTPUT);
+  digitalWrite(PROG_SIGNAL_PIN, LOW);
   pinMode(SIGNAL_PIN, OUTPUT);
   digitalWrite(SIGNAL_PIN, LOW);
   shield = find_shield();
@@ -296,7 +524,7 @@ void setup() {
   TIMSK1 = _BV(TOIE1);
   interrupts();
   Serial.begin(115200);
-  Serial.println("LEAH DCC BASE 3");
+  Serial.println("LEAH DCC BASE 4");
 }
 
 void loop() {
