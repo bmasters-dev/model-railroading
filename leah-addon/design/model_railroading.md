@@ -241,6 +241,18 @@ its barrel jack, and no locomotive. Decided by Claude (the owner can overrule):
   on hand, and the cut-off is proved without one). The USB isolator is on order: until it comes, the
   Mega's USB goes to the PC as DCC-EX's own users do.
 
+- **Measured on the owner's bench, 2026-11-10/11** (a 12 V 5 A centre-positive supply, HTY-1200500,
+  in the shield's jack; the owner's DCC Concepts DCC meter and a multimeter on channel A's two
+  screws): the shield found (`shield yes`); with no supply in the jack, `+` is cut at once by the
+  driver's fault line (the safety working before any 12 V); **12.22 V of DCC** on the DCC meter; DC
+  volts across A's two screws between -1.5 and -0.5 (never stuck at DC; one A screw to a B screw read
+  5.38 V, half the supply, as it swings 0 to 12 V); the multimeter's AC volts read only 1.79 (it
+  can't follow DCC's frequency: use a DCC meter). With the 470 ohm resistor across A: Leah read 23 to
+  30 mA; with the limit at 15 mA **the board cut the power by itself** and Leah gave its reason; `+`
+  again at once was refused for 2 seconds; after it, at 1500 mA, the power came on again. The Uno on
+  the shield's pin 12 socket heard every packet, 57.5 to 58.0 and 99.5 to 100.0 us. **Step 3 passes.**
+  (No dead short was tried: no power resistor on hand, and the cut-off is proved without one.)
+
 ## Rules to keep (agreed in principle)
 
 - **Emergency stop** always works, from code and from every throttle control.
