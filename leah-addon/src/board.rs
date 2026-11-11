@@ -17,7 +17,7 @@ pub const BASE_PROGRAM: &str = include_str!("../boards/dcc_base/dcc_base.ino");
 pub const READER_PROGRAM: &str = include_str!("../boards/dcc_reader/dcc_reader.ino");
 
 /// What each program says as it starts.
-pub const BASE_HELLO: &str = "LEAH DCC BASE 3";
+pub const BASE_HELLO: &str = "LEAH DCC BASE 4";
 pub const READER_HELLO: &str = "LEAH DCC READER 1";
 
 /// How a port couldn't be opened, in words a person can act on.
@@ -33,6 +33,10 @@ pub fn open(port: &str) -> Result<File, OpenError> {
     }
     let file = std::fs::OpenOptions::new().read(true).write(true).custom_flags_noctty().open(port).map_err(|e| words(port, &e))?;
     let fd = file.as_raw_fd();
+    // (Only this program may open the port while it has it: two programs talking to one board at once
+    // would mix their commands. A port another program has made its own the same way says "busy".)
+    // SAFETY: an ioctl without arguments on the descriptor just opened.
+    unsafe { libc::ioctl(fd, libc::TIOCEXCL) };
     // SAFETY: a termios read and write on the descriptor just opened.
     unsafe {
         let mut t: libc::termios = std::mem::zeroed();
@@ -126,6 +130,9 @@ pub struct Heard {
     pub shield: Option<bool>,
     pub limit: Option<i64>,
     pub current: Option<i64>,
+    /// The base station's answers to reading a setting ("CV 1 3", "CV 1 none", "CV 1 off ..."), oldest
+    /// first.
+    pub cv_answers: VecDeque<String>,
     /// The first line each board said as it started (or "STATE ..." / "T ..." when it said nothing
     /// as it started).
     pub base_hello: Option<String>,
@@ -148,6 +155,100 @@ pub struct Link {
     base: Arc<Mutex<File>>,
     pub heard: Arc<Mutex<Heard>>,
     stop: Arc<AtomicBool>,
+    /// Whether a reading on the programming track is going on (one at a time).
+    busy: Arc<AtomicBool>,
+}
+
+/// What reading a decoder's settings needs from the link, for the script's thread or one of its own:
+/// the way to the base station, what it heard, and whether a reading is going on.
+#[derive(Clone)]
+pub struct Reading {
+    base: Arc<Mutex<File>>,
+    heard: Arc<Mutex<Heard>>,
+    busy: Arc<AtomicBool>,
+}
+
+/// How long the base station may take over one setting (it needs about 3 seconds).
+const READ_LIMIT: Duration = Duration::from_secs(15);
+
+impl Reading {
+    /// Takes the programming track for one reading after another; None when a reading is going on.
+    pub fn start(&self) -> Option<ReadingTurn> {
+        (!self.busy.swap(true, Ordering::SeqCst)).then(|| ReadingTurn(self.clone()))
+    }
+}
+
+/// The programming track taken for readings: given back when dropped.
+pub struct ReadingTurn(Reading);
+
+impl Drop for ReadingTurn {
+    fn drop(&mut self) {
+        self.0.busy.store(false, Ordering::SeqCst);
+    }
+}
+
+impl ReadingTurn {
+    /// Reads a setting (CV 1 to 1024): its value, or what went wrong in words. One no decoder answered
+    /// is tried again, up to 3 times all told (a wheel losing contact for the 6 ms of an answer is
+    /// enough to miss it, as other command stations find too).
+    pub fn read_cv(&self, cv: i64) -> Result<i64, String> {
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            match self.read_cv_once(cv) {
+                Err(e) if tries < 3 && e.starts_with("no decoder answered") => continue,
+                done => return done,
+            }
+        }
+    }
+
+    fn read_cv_once(&self, cv: i64) -> Result<i64, String> {
+        let r = &self.0;
+        r.heard.lock().unwrap_or_else(|p| p.into_inner()).cv_answers.clear();
+        {
+            let mut base = r.base.lock().unwrap_or_else(|p| p.into_inner());
+            trace(&format!("-> R {cv}"));
+            write_all(&mut base, format!("R {cv}\n").as_bytes()).map_err(|e| format!("can't talk to the base station: {e}"))?;
+        }
+        let start = Instant::now();
+        let answer = loop {
+            let mut h = r.heard.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(a) = h.cv_answers.pop_front() {
+                break a;
+            }
+            if let Some(gone) = &h.gone {
+                return Err(gone.clone());
+            }
+            drop(h);
+            if start.elapsed() > READ_LIMIT {
+                return Err(format!("the base station didn't answer within {} seconds", READ_LIMIT.as_secs()));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let rest = answer.trim_start_matches("CV ").split_once(' ').map(|(_, r)| r.trim().to_string()).unwrap_or_default();
+        if let Some(seen) = rest.strip_prefix("none") {
+            let seen = seen.trim();
+            let seen = if seen.is_empty() { String::new() } else { format!(" {seen}") };
+            return Err(format!("no decoder answered on the programming track (the shield's B screws){seen}: is a locomotive on it, with clean wheels? A decoder answers by pulsing its motor, so it needs one"));
+        }
+        if let Some(why) = rest.strip_prefix("off ") {
+            return Err(why.to_string());
+        }
+        rest.parse::<i64>().map_err(|_| format!("the base station answered {answer:?}"))
+    }
+
+    /// Reads a decoder's address: CV 29's bit 5 says which one it answers to, CV 17 and 18 holding
+    /// the long one, CV 1 the short one. (address, long).
+    pub fn read_address(&self) -> Result<(i64, bool), String> {
+        let config = self.read_cv(29)?;
+        if config & 0x20 != 0 {
+            let high = self.read_cv(17)?;
+            let low = self.read_cv(18)?;
+            Ok((((high & 0x3F) << 8) | low, true))
+        } else {
+            Ok((self.read_cv(1)? & 0x7F, false))
+        }
+    }
 }
 
 impl Link {
@@ -170,7 +271,12 @@ impl Link {
                 run_link(base, base_reading, reader, reader_port, port, heard, stop);
             })
             .map_err(|e| OpenError { message: format!("can't start the link to {port}: {e}") })?;
-        Ok(Link { port: port.to_string(), reader_port: reader_port.map(str::to_string), base, heard, stop })
+        Ok(Link { port: port.to_string(), reader_port: reader_port.map(str::to_string), base, heard, stop, busy: Arc::new(AtomicBool::new(false)) })
+    }
+
+    /// What reading a decoder's settings needs, to take to a thread of its own.
+    pub fn reading(&self) -> Reading {
+        Reading { base: self.base.clone(), heard: self.heard.clone(), busy: self.busy.clone() }
     }
 
     /// Sends the base station a line ("K 3 03 3F A9 95", "+", ...).
@@ -354,6 +460,8 @@ fn run_link(base: Arc<Mutex<File>>, mut base_reading: File, mut reader: Option<F
                     if let Some(n) = after("limit").and_then(|n| n.parse().ok()) {
                         h.limit = Some(n);
                     }
+                } else if line.starts_with("CV ") {
+                    h.cv_answers.push_back(line);
                 } else if let Some(n) = line.strip_prefix("A ").and_then(|n| n.trim().parse().ok()) {
                     h.current = Some(n);
                 } else if line != "OK" {

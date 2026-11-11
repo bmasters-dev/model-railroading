@@ -10,6 +10,7 @@ without a line; while its power is on, what it sends reaches the reader, which s
     python3 fake_boards.py [--base normal|silent|old|reader] [--log FILE] [--cut-after SECONDS]
                            [--drop-reader-after SECONDS] [--drop-base-after SECONDS]
                            [--shield] [--current MILLIAMPS] [--restart-after SECONDS]
+                           [--cvs 1=3,29=6,...]
 
 It prints the two ports' paths ("BASE /dev/pts/5" and "READER /dev/pts/6") and runs until its
 standard input closes. `--base silent` is a board that says nothing (not running Leah's program);
@@ -21,6 +22,8 @@ board's port that long after the base station first heard from the PC, as a pull
 `--shield` is a base station with the motor shield on it, its track drawing `--current` mA (0 if not
 given) while the power is on: it says the current every half second, and turns the power off when
 it is over the limit, as the board does (and then refuses to turn it on again for 2 seconds).
+`--cvs` gives the settings a decoder on the programming track answers with (`R <cv>`: "CV <cv> <value>",
+or "CV <cv> none (...)" for one not given), as the board's reading does (with the shield only).
 `--restart-after` starts the base station again by itself that long after it first heard from the
 PC (as a brown-out does): its hello, its table emptied, its limit back to 1500, its power off.
 """
@@ -54,6 +57,7 @@ def main():
     tripped_at = None
     restart_after = None
     restarted = False
+    cvs = {}
     args = sys.argv[1:]
     while args:
         a = args.pop(0)
@@ -73,6 +77,8 @@ def main():
             drawing = int(args.pop(0))
         elif a == "--restart-after":
             restart_after = float(args.pop(0))
+        elif a == "--cvs":
+            cvs = {int(k): int(v) for k, v in (pair.split("=") for pair in args.pop(0).split(","))}
     log = open(log_path, "a", buffering=1) if log_path else None
 
     base_master, base_slave = os.openpty()
@@ -152,6 +158,20 @@ def main():
                     now_ma = drawing if shield and power else 0
                     say(base_master, f"STATE power {'on' if power else 'off'} places {len(table)} shield {'yes' if shield else 'no'} current {now_ma} limit {limit}")
                     continue
+                elif c == "R":
+                    cv = int(line[1:].split()[0])
+                    if not shield:
+                        say(base_master, f"CV {cv} off there is no motor shield")
+                        continue
+                    if power:
+                        power = False
+                        say(base_master, "OFF reading a setting: the main track's power is off while the programming track is on")
+                    time.sleep(0.2)
+                    if cv in cvs:
+                        say(base_master, f"CV {cv} {cvs[cv]}")
+                    else:
+                        say(base_master, f"CV {cv} none (baseline 0 mA, highest 0 mA)")
+                    continue
                 elif c == "L":
                     n = int(line[1:].split()[0])
                     if not 10 <= n <= 5000:
@@ -179,7 +199,7 @@ def main():
         now = time.time()
         if mode in ("old", "reader") and now - last_old_hello > 0.5:
             last_old_hello = now
-            say(base_master, "LEAH DCC BASE 2" if mode == "old" else "LEAH DCC READER 1")
+            say(base_master, "LEAH DCC BASE 3" if mode == "old" else "LEAH DCC READER 1")
         if first_word is not None and drop_reader_after is not None and now - first_word > drop_reader_after and reader_master >= 0:
             os.close(reader_slave)
             os.close(reader_master)
@@ -199,7 +219,7 @@ def main():
             table.clear()
             waiting.clear()
             limit = 1500
-            say(base_master, "LEAH DCC BASE 3")
+            say(base_master, "LEAH DCC BASE 4")
         if power and shield and now - last_a >= 0.5:
             last_a = now
             say(base_master, f"A {drawing}")

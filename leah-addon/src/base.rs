@@ -9,13 +9,13 @@ use std::collections::{BTreeMap, VecDeque};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use leah_addon_kit::{Call, Error, Object, Value};
+use leah_addon_kit::{Call, Error, Events, Object, Value};
 
 use crate::board::{self, Link, Timing};
 use crate::dcc::{self, DecoderState, Reader, Target};
 
 const BASE_PROPS: &[&str] = &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"];
-const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close"];
+const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address"];
 const LOCO_PROPS: &[&str] = &["address", "long", "base", "speed", "direction"];
 const LOCO_FUNCS: &[&str] = &["set_function", "function", "stop", "emergency_stop"];
 
@@ -68,6 +68,8 @@ pub struct DccBase {
     limit: Cell<i64>,
     /// Why the board can't be used any more (its port went away), once it can't.
     lost: RefCell<Option<String>>,
+    /// Its events (`on_read`), fired from a reading's thread.
+    events: Option<Events>,
 }
 
 thread_local! {
@@ -131,6 +133,7 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
         current: Cell::new(0),
         limit: Cell::new(DEFAULT_LIMIT),
         lost: RefCell::new(None),
+        events: None,
     };
     if simulate {
         if !call.args.is_empty() || reader_port.is_some() {
@@ -152,7 +155,10 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
         base.reader_port = reader_port;
         *base.link.borrow_mut() = Some(link);
     }
-    let value = call.new_object(base);
+    let value = call.new_object_with_events(move |events| {
+        base.events = Some(events);
+        base
+    });
     // (The kit keeps the object; the last one made is found again through it, by its value.)
     let made = call.own_value::<DccBase>(&value);
     LAST.with(|l| *l.borrow_mut() = made.as_ref().map(Rc::downgrade).unwrap_or_default());
@@ -389,6 +395,48 @@ impl DccBase {
         }
     }
 
+    /// The programming track taken for readings, or the error saying why it can't be.
+    fn reading_turn(&self, what: &str, call: &Call) -> Result<board::ReadingTurn, Error> {
+        if self.simulated() {
+            return Err(hardware(format!("{what}: reading a decoder's settings needs Leah's base station board with its motor shield (its channel B is the programming track)")));
+        }
+        self.take_heard(call);
+        if !self.shield.get() {
+            return Err(hardware(format!("{what}: the base station has no motor shield, whose channel B is the programming track")));
+        }
+        let reading = self.with_link(what, |l| Ok(l.reading()))?;
+        reading.start().ok_or_else(|| hardware(format!("{what}: a reading is going on already: one at a time (wait for its on_read)")))
+    }
+
+    /// Runs a reading on a thread of its own, firing `on_read(what, value, error)` when it is done (the
+    /// value null on an error, the error null otherwise); a script without windows waits for it.
+    fn read_in_background(&self, turn: board::ReadingTurn, what: Value, read: impl FnOnce(&board::ReadingTurn) -> Result<Value, String> + Send + 'static) {
+        let Some(events) = self.events.clone() else { return };
+        events.keep_running(true);
+        // (The main track's power goes off for the reading, as the board says in its "OFF" line.)
+        self.power.set(false);
+        self.current.set(0);
+        std::thread::spawn(move || {
+            let done = read(&turn);
+            drop(turn);
+            let (value, error) = match done {
+                Ok(v) => (v, Value::Null),
+                Err(e) => (Value::Null, Value::from(e)),
+            };
+            // ("No more" first, then the event: its function may start another reading, whose "yes"
+            // must be the newer word; Leah keeps the script waiting for the event meanwhile.)
+            events.keep_running(false);
+            events.fire("on_read", vec![what, value, error]);
+        });
+    }
+
+    /// After a reading on the script's thread: the main track's power was turned off by it.
+    fn after_reading(&self, call: &Call) {
+        self.take_heard(call);
+        self.power.set(false);
+        self.current.set(0);
+    }
+
     fn close(&self) {
         if let Some(link) = self.link.borrow_mut().take() {
             link.close();
@@ -514,6 +562,39 @@ impl Object for DccBase {
                 call.only_options(&[])?;
                 self.close();
                 Ok(Value::Null)
+            }
+            "read_cv" => {
+                call.count_between(1, 1)?;
+                call.only_options(&["in_background"])?;
+                let cv = whole("dcc_base.read_cv", "a setting's number", call.arg(0))?;
+                if !(1..=1024).contains(&cv) {
+                    return Err(Error::range_error(format!("dcc_base.read_cv(): a setting (CV) is 1 to 1024, not {cv}")));
+                }
+                let background = bool_option(call, "in_background", false)?;
+                let turn = self.reading_turn("dcc_base.read_cv()", call)?;
+                if background {
+                    self.read_in_background(turn, Value::from(cv), move |t| t.read_cv(cv).map(Value::from));
+                    return Ok(Value::Null);
+                }
+                let read = turn.read_cv(cv);
+                drop(turn);
+                self.after_reading(call);
+                read.map(Value::from).map_err(|e| hardware(format!("dcc_base.read_cv(): {e}")))
+            }
+            "read_address" => {
+                call.count_between(0, 0)?;
+                call.only_options(&["in_background"])?;
+                let background = bool_option(call, "in_background", false)?;
+                let turn = self.reading_turn("dcc_base.read_address()", call)?;
+                let as_value = |(address, long): (i64, bool)| Value::map([("address", Value::from(address)), ("long", Value::from(long))]);
+                if background {
+                    self.read_in_background(turn, Value::from("address"), move |t| t.read_address().map(as_value));
+                    return Ok(Value::Null);
+                }
+                let read = turn.read_address();
+                drop(turn);
+                self.after_reading(call);
+                read.map(as_value).map_err(|e| hardware(format!("dcc_base.read_address(): {e}")))
             }
             other => Err(call.unknown_function("dcc_base", other, BASE_FUNCS)),
         }

@@ -346,7 +346,7 @@ fn a_base_station_that_turns_its_power_off_says_so() {
 fn a_board_without_leahs_program_is_named_with_what_to_do() {
     for (mode, words) in [
         ("silent", "isn't running Leah's base station program: load it with load_dcc_program(\"{port}\", \"base\")"),
-        ("old", "runs an older program of Leah's (LEAH DCC BASE 2): load the new one with load_dcc_program(\"{port}\", \"base\")"),
+        ("old", "runs an older program of Leah's (LEAH DCC BASE 3): load the new one with load_dcc_program(\"{port}\", \"base\")"),
         ("reader", "runs Leah's reader program, not the base station's: are the base station's and the reader's ports the wrong way round?"),
     ] {
         let Some(boards) = fake_boards(&["--base", mode]) else {
@@ -706,4 +706,87 @@ fn the_dcc_throttle_example_drives_a_locomotive() {
     // (Forward and speed 0 on connecting; then the horn (a button's click() runs at once, the switch's
     // and the slider's change events a moment later), the power, speed 30; the emergency stop.)
     assert_eq!(lines, ["X", "K 0 01 3F 80 BE", "K 0 01 3F 80 BE", "K 1 01 82 83", "+", "K 0 01 3F 9F A1", "S 00 41 41", "K 0 01 3F 81 BF", "D 0", "D 1", "X"], "{said}");
+}
+
+#[test]
+fn a_decoders_settings_and_address_are_read_on_the_programming_track() {
+    // The stand-in decoder on the programming track: a short address (CV 29 without bit 5, CV 1), and
+    // one with a long address (bit 5, CV 17 and 18); a setting nobody answers; reading turns the main
+    // track off; a simulated base station can't read.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=1,29=6,8=141"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+$base.power = true
+print($base.read_address())
+print([$base.read_cv(8), $base.power])
+foreach [function() {{ return $base.read_cv(7) }}, function() {{ return $base.read_cv(0) }}, function() {{ return dcc_base(simulate: true).read_cv(1) }}] as $f {{
+    try {{
+        $f()
+    }} catch $e {{
+        print($e.type + ": " + $e.message)
+    }}
+}}
+"#,
+        boards.base
+    );
+    let read = run("read-cv", &script);
+    drop(boards);
+    assert!(read.success, "{}", read.stderr);
+    assert_eq!(
+        read.stdout,
+        concat!(
+            "[\"address\": 1, \"long\": false]\n",
+            "[141, false]\n",
+            "hardware_error: dcc_base.read_cv(): no decoder answered on the programming track (the shield's B screws) (baseline 0 mA, highest 0 mA): is a locomotive on it, with clean wheels? A decoder answers by pulsing its motor, so it needs one\n",
+            "range_error: dcc_base.read_cv(): a setting (CV) is 1 to 1024, not 0\n",
+            "hardware_error: dcc_base.read_cv(): reading a decoder's settings needs Leah's base station board with its motor shield (its channel B is the programming track)\n",
+        )
+    );
+
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "29=38,17=194,18=218"]) else { return };
+    let long = run("read-long", &format!("$base = dcc_base(\"{}\")\nprint($base.read_address())\n", boards.base));
+    drop(boards);
+    assert!(long.success, "{}", long.stderr);
+    // (17 = 194 = 0xC2, 18 = 218 = 0xDA: (0x02 << 8) | 0xDA = 730.)
+    assert_eq!(long.stdout, "[\"address\": 730, \"long\": true]\n");
+}
+
+#[test]
+fn a_reading_in_the_background_answers_through_on_read() {
+    // read_address(in_background: true) gives back at once, refuses a second reading meanwhile, and
+    // its answer comes as on_read; a script without windows waits for it. A setting nobody answers
+    // comes as the error.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=1,29=6"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+$base.on_read = function($what, $value, $error) {{
+    global $base
+    print([$what, $value, $error])
+    if $what == "address" {{
+        $base.read_cv(8, in_background: true)
+    }}
+}}
+print($base.read_address(in_background: true))
+try {{
+    $base.read_cv(1)
+}} catch $e {{
+    print($e.message)
+}}
+"#,
+        boards.base
+    );
+    let read = run("read-background", &script);
+    drop(boards);
+    assert!(read.success, "{}", read.stderr);
+    let lines: Vec<&str> = read.stdout.lines().collect();
+    assert_eq!(lines[0], "");
+    assert_eq!(lines[1], "dcc_base.read_cv(): a reading is going on already: one at a time (wait for its on_read)");
+    assert_eq!(lines[2], "[\"address\", [\"address\": 1, \"long\": false], null]");
+    assert!(lines[3].starts_with("[8, null, \"no decoder answered on the programming track"), "{}", read.stdout);
 }
