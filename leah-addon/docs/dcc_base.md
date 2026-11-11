@@ -4,7 +4,12 @@
 
 A DCC base station, the command station's heart: it sends the packets the decoders in the locomotives obey. [locomotive](ref:locomotive) objects are made on it, and each change to one sends its packet. It comes with the **model_railroading** addon ([Model railroading](ref:Model railroading)).
 
-The base station is simulated: it has no board and puts no power on any rails. Each packet is turned into the signal a base station would put on the rails, and a simulated decoder for each address reads it back from that signal, as a decoder does. What each decoder understood is given by [decoder](#decoder). A base station isn't shown and needs no window.
+A base station is one of two kinds:
+
+- **Simulated** (`simulate: true`): no board, no power on any rails. Each packet is turned into the signal a base station would put on the rails, and a simulated decoder for each address reads it back from that signal, as a decoder does.
+- **Leah's base station board** (a port): an Arduino Mega running Leah's base station program makes the real DCC signal, its timing from the board's own hardware timer. A second board, the **reader** (an Arduino Uno or Nano running Leah's reader program), can read that signal back as a decoder would and tell Leah what it heard and how long each half-bit lasted. So far the board's signal is 5 V logic on its pin 12, for checking on the bench: a motor shield to put it on the rails comes later. [Model railroading](ref:Model railroading#leahs-base-station-board) says how to join the two boards.
+
+What each decoder understood (the simulated ones, or the one the reader stands for) is given by [decoder](#decoder). A base station isn't shown and needs no window.
 
 ```leah
 $base = dcc_base(simulate: true)
@@ -25,27 +30,46 @@ reverse
 
 ## Making one
 
-**dcc_base**(simulate: false) · dcc_base
+**dcc_base**(simulate: true) · dcc_base
+
+**dcc_base**(port, reader: null) · dcc_base
 
 | Part | Description |
 |---|---|
-| simulate | Required, as `true`: a simulated base station. Without it, or with a port given, it is a `hardware_error`: `dcc_base(): give the board's port, or simulate: true for a simulated base station (the board isn't supported yet)`. |
+| simulate | `true`: a simulated base station. It takes no port and no reader (a `type_error`). |
+| port | The base station board's port, its whole path: `"/dev/ttyACM0"`. [dcc_ports](ref:DCC board functions#dcc_ports) lists the boards plugged in. |
+| reader | Optional. The reader board's port, to read the signal back. Without it, [decoder](#decoder) gives `null` and [timing](#timing) is `null`. |
 
-It starts with the track power off, as a command station does: until [power](#power) is `true`, packets are sent but no decoder hears them.
+Opening a board's port starts its program again, as an Arduino's does, so making a base station on a board takes a second or two: it waits until both boards say they run Leah's programs and the base station answers, then starts clean (nothing kept from before, the track power off). It is a `hardware_error`, in words that say what to do, when there is no such port (`dcc_base(): there is no board on /dev/ttyACM1: is it plugged in? (dcc_ports() lists the ports there are)`), when this account may not use it yet (`... on Linux, apps may use a board's USB port only once your account is in the `dialout` group ...`), when another program has it open, or when a board isn't running Leah's program (`... load it with load_dcc_program("/dev/ttyACM0", "base")`). Without a port and without `simulate: true`, it is a `hardware_error` saying to give one.
+
+Either kind starts with the track power off, as a command station does: until [power](#power) is `true`, packets are sent but no decoder hears them.
+
+```leah check
+$base = dcc_base("/dev/ttyACM0", reader: "/dev/ttyUSB0")
+$loco = locomotive(3)
+$loco.speed = 40
+$base.power = true
+```
+
+**On a board**, a locomotive's speed and its lights (F0 to F4) are kept in the board's refresh table and sent again and again, as command stations do, so a decoder that missed one packet, or a locomotive put on the track later, still gets them; every other packet is sent at once, three times. The table holds 16 locomotives. **Safety**: while the track power is on, Leah tells the board every second that it is still there; after 3 seconds without a word (the program ended or crashed, or the cable came out) the board turns the track power off by itself, and Leah says so with a warning when it next hears from the board.
 
 ## Properties
 
 | Name | Type | Read-only |
 |---|---|---|
 | [packets](#packets) | array | ✓ |
+| [port](#port) | text | ✓ |
 | [power](#power) | boolean | |
+| [reader](#reader) | text | ✓ |
 | [simulate](#simulate) | boolean | ✓ |
+| [timing](#timing) | array | ✓ |
 
 ## Functions
 
 | Name | Parameters | Returns |
 |---|---|---|
 | [clear_packets](#clear_packets) | | |
+| [close](#close) | | |
 | [decoder](#decoder) | address as number, long: boolean | array |
 | [emergency_stop](#emergency_stop) | | |
 
@@ -62,7 +86,7 @@ The last 200 packets sent, the oldest first. Each is an array of four:
 | `bytes` | the packet's bytes in hex, the error byte last: `"03 3F A9 95"` |
 | `bits` | its bits as they go onto the rails, grouped: the preamble, then each byte after its 0, then the closing 1 |
 | `meaning` | what it says, in words: `"locomotive 3: speed 40, forward"` |
-| `heard` | `true` when a decoder heard it; `false` when the track power was off |
+| `heard` | Simulated: `true` when a decoder heard it, `false` when the track power was off. On a board: `true` once the reader heard it go out, `false` until then (and for good when a newer packet took its place before it went out, or with no reader) |
 
 ```leah
 $base = dcc_base(simulate: true)
@@ -84,11 +108,27 @@ locomotive 3: speed 40, forward
 
 ---
 
+### port
+
+**port** · text · read-only
+
+The base station board's port, or `null` when it is simulated.
+
+---
+
 ### power
 
 **power** · boolean
 
-The track power: `true` puts the signal on the simulated rails, so the decoders hear the packets; `false` (the default) takes it off. With the power off, packets are still sent and listed in [packets](#packets), with `heard` `false`, and the decoders keep what they last understood. Anything but `true` or `false` is a `type_error`.
+The track power: `true` puts the signal on the rails (the simulated ones, or the board's pin), so the decoders hear the packets; `false` (the default) takes it off. With the power off, packets are still sent and listed in [packets](#packets), and the decoders keep what they last understood. On a board, it turns `false` by itself when the board turned the power off for safety (Leah had gone quiet for 3 seconds), with a warning. Anything but `true` or `false` is a `type_error`; on a board that was closed, or whose cable came out, setting it is a `hardware_error`.
+
+---
+
+### reader
+
+**reader** · text · read-only
+
+The reader board's port, or `null` when there is none.
 
 ---
 
@@ -96,7 +136,33 @@ The track power: `true` puts the signal on the simulated rails, so the decoders 
 
 **simulate** · boolean · read-only
 
-`true`: the base station is simulated.
+`true` when the base station is simulated, `false` on a board.
+
+---
+
+### timing
+
+**timing** · array · read-only
+
+What the reader measured of the signal over its last second, or `null` before it has said anything (and always, simulated or without a reader):
+
+| Key | Holds |
+|---|---|
+| `one` | the shortest and longest half of a 1 bit, in microseconds, as a list: `[57.5, 58.0]`; `null` when there was no signal |
+| `zero` | the same for a 0 bit: `[99.5, 100.0]` |
+| `packets` | the packets it heard |
+| `outside` | the half-bits outside what a decoder takes (a 1's half 52 to 64 µs, a 0's 90 to 10,000 µs) |
+| `errors` | the packets whose error byte was wrong |
+
+The NMRA's limits for a command station are a 1's half of 55 to 61 µs and a 0's of at least 95 µs.
+
+```leah check
+$base = dcc_base("/dev/ttyACM0", reader: "/dev/ttyUSB0")
+$base.power = true
+sleep(1500)
+$t = $base.timing
+print("a 1's halves: " + $t["one"][0] + " to " + $t["one"][1] + " µs")
+```
 
 ## Function descriptions
 
@@ -108,11 +174,19 @@ Empties [packets](#packets).
 
 ---
 
+### close
+
+**close**()
+
+On a board: turns the track power off, forgets the refresh table, and lets go of both ports, so another program (or [load_dcc_program](ref:DCC board functions#load_dcc_program)) can use them. A base station the script lets go of closes by itself. Afterwards, changing it is a `hardware_error`. A simulated one only has its power turned off.
+
+---
+
 ### decoder
 
 **decoder**(address, long: false) · array
 
-What the simulated decoder at an address understood from the signal, as an array: `address`, `long`, `speed` (0 to 126), `direction` (`"forward"` or `"reverse"`), `functions` (F0 to F28, each `true` or `false`), and `packets` (how many it heard). `null` when no packet has reached that decoder. `long: true` asks for the decoder at a long address, as for [locomotive](ref:locomotive).
+What the decoder at an address understood from the signal: the simulated decoder's, or on a board, what the reader heard for that address, as an array: `address`, `long`, `speed` (0 to 126), `direction` (`"forward"` or `"reverse"`), `functions` (F0 to F28, each `true` or `false`), and `packets` (how many it heard). `null` when no packet has reached that decoder (and always on a board with no reader). On a board the reader tells Leah each packet when it first hears it and then at most every 2 seconds, so `packets` counts those, not every repeat. `long: true` asks for the decoder at a long address, as for [locomotive](ref:locomotive).
 
 ```leah
 $base = dcc_base(simulate: true)
@@ -137,7 +211,7 @@ Output:
 
 **emergency_stop**()
 
-Stops every locomotive at once: the emergency stop to the broadcast address, which every decoder obeys. Each [locomotive](ref:locomotive) made on this base station has its [speed](ref:locomotive#speed) set to 0.
+Stops every locomotive at once: the emergency stop to the broadcast address, which every decoder obeys. Each [locomotive](ref:locomotive) made on this base station has its [speed](ref:locomotive#speed) set to 0; on a board, each one's kept speed becomes its own emergency stop too, so the refresh table doesn't start it again.
 
 ```leah
 $base = dcc_base(simulate: true)
@@ -160,4 +234,4 @@ Output:
 
 ## See also
 
-[locomotive](ref:locomotive), [Model railroading](ref:Model railroading)
+[locomotive](ref:locomotive), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job), [Model railroading](ref:Model railroading)

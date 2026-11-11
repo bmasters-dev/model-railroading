@@ -1,23 +1,34 @@
-//! `dcc_base(simulate: true)` and `locomotive($address)` (design/model_railroading.md, "Stage 1a"):
-//! the base station, simulated for now, and the locomotives it drives. Each change sends its packet
-//! at once; on the simulated track the packet becomes its signal, which the simulated decoders read
-//! back as real ones do.
+//! `dcc_base()` and `locomotive($address)` (design/model_railroading.md, "Stage 1a" and "Stage 1b"):
+//! the base station, simulated or Leah's own board on a USB port, and the locomotives it drives. Each
+//! change sends its packet at once. On the simulated track the packet becomes its signal, which the
+//! simulated decoders read back as real ones do; on the board it goes out as the real signal, and a
+//! reader board (`reader:`) reads it back and tells Leah what it heard.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::{Rc, Weak};
+use std::time::Duration;
 
 use leah_addon_kit::{Call, Error, Object, Value};
 
+use crate::board::{self, Link, Timing};
 use crate::dcc::{self, DecoderState, Reader, Target};
 
-const BASE_PROPS: &[&str] = &["simulate", "power", "packets"];
-const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets"];
+const BASE_PROPS: &[&str] = &["simulate", "port", "reader", "power", "packets", "timing"];
+const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close"];
 const LOCO_PROPS: &[&str] = &["address", "long", "base", "speed", "direction"];
 const LOCO_FUNCS: &[&str] = &["set_function", "function", "stop", "emergency_stop"];
 
 /// The packets a base station keeps for `packets`.
 const KEPT: usize = 200;
+/// The places in the board's refresh table.
+const PLACES: u8 = 32;
+/// How long a board may take to say it runs Leah's program (it starts again as its port opens).
+const START_LIMIT: Duration = Duration::from_secs(5);
+
+/// An address's places in the refresh table (its speed's, its F0 to F4's), and how many locomotive
+/// objects share them.
+type SharedPlaces = (Option<u8>, Option<u8>, usize);
 
 /// A packet sent, as `packets` gives it.
 struct Sent {
@@ -29,11 +40,23 @@ struct Sent {
 pub struct DccBase {
     power: Cell<bool>,
     sent: RefCell<VecDeque<Sent>>,
-    /// The simulated track: what its decoders read the signal with, and each decoder's state.
+    /// The simulated track's reader (what its decoders read the signal with); and each decoder's
+    /// state: the simulated ones', or, on a board, what the reader board heard.
     reader: RefCell<Reader>,
     decoders: RefCell<BTreeMap<(u16, bool), DecoderState>>,
     /// The locomotive objects made on it (for its emergency stop).
     locomotives: RefCell<Vec<Weak<Locomotive>>>,
+    /// The board, when it isn't simulated (None again once closed); its port, its reader's port.
+    link: RefCell<Option<Link>>,
+    port: Option<String>,
+    reader_port: Option<String>,
+    /// The refresh table's places in use, and each address's (its speed's and its F0 to F4's), with
+    /// how many locomotive objects share them.
+    places: Cell<u32>,
+    places_of: RefCell<BTreeMap<(u16, bool), SharedPlaces>>,
+    timing: RefCell<Option<Timing>>,
+    /// Why the board can't be used any more (its port went away), once it can't.
+    lost: RefCell<Option<String>>,
 }
 
 thread_local! {
@@ -64,20 +87,53 @@ fn bool_option(call: &Call, name: &str, default: bool) -> Result<bool, Error> {
     }
 }
 
-/// `dcc_base(simulate: true)`.
+/// An option given as text, or null (None when not given or null).
+fn text_option(call: &Call, name: &str) -> Result<Option<String>, Error> {
+    match call.option(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Text(t)) => Ok(Some(t.clone())),
+        Some(other) => Err(Error::type_error(format!("{}()'s `{name}:` is text, not {}", call.name, describe(other))).at(call.option_line(name))),
+    }
+}
+
+/// `dcc_base($port, reader: $port)` or `dcc_base(simulate: true)`.
 pub fn new_base(call: &mut Call) -> Result<Value, Error> {
     call.count_between(0, 1)?;
-    call.only_options(&["simulate"])?;
-    if !bool_option(call, "simulate", false)? {
-        return Err(hardware(match call.args.first() {
-            Some(port) => format!("dcc_base(): Leah's base station board isn't supported yet ({}): dcc_base(simulate: true) runs a simulated one", describe(port)),
-            None => "dcc_base(): give the board's port, or simulate: true for a simulated base station (the board isn't supported yet)".to_string(),
-        }));
+    call.only_options(&["simulate", "reader"])?;
+    let simulate = bool_option(call, "simulate", false)?;
+    let reader_port = text_option(call, "reader")?;
+    let mut base = DccBase {
+        power: Cell::new(false),
+        sent: RefCell::new(VecDeque::new()),
+        reader: RefCell::new(Reader::default()),
+        decoders: RefCell::new(BTreeMap::new()),
+        locomotives: RefCell::new(Vec::new()),
+        link: RefCell::new(None),
+        port: None,
+        reader_port: None,
+        places: Cell::new(0),
+        places_of: RefCell::new(BTreeMap::new()),
+        timing: RefCell::new(None),
+        lost: RefCell::new(None),
+    };
+    if simulate {
+        if !call.args.is_empty() || reader_port.is_some() {
+            return Err(Error::type_error("dcc_base(simulate: true) takes no port and no reader: the simulated base station has no boards"));
+        }
+    } else {
+        let port = match call.args.first() {
+            Some(Value::Text(p)) => p.clone(),
+            Some(other) => return Err(Error::type_error(format!("dcc_base()'s port is text, like \"/dev/ttyACM0\", not {}", describe(other)))),
+            None => return Err(hardware("dcc_base(): give the base station board's port, like dcc_base(\"/dev/ttyACM0\") (dcc_ports() lists them), or simulate: true for a simulated base station")),
+        };
+        let link = Link::open(&port, reader_port.as_deref()).map_err(|e| hardware(format!("dcc_base(): {}", e.message)))?;
+        link.wait_for_programs(START_LIMIT).map_err(|e| hardware(format!("dcc_base(): {e}")))?;
+        // (A clean start: nothing kept from before, the track power off.)
+        link.say("X").map_err(|e| hardware(format!("dcc_base(): can't talk to the board on {port}: {e}")))?;
+        base.port = Some(port);
+        base.reader_port = reader_port;
+        *base.link.borrow_mut() = Some(link);
     }
-    if !call.args.is_empty() {
-        return Err(Error::type_error("dcc_base(simulate: true) takes no port: the simulated base station has no board"));
-    }
-    let base = DccBase { power: Cell::new(false), sent: RefCell::new(VecDeque::new()), reader: RefCell::new(Reader::default()), decoders: RefCell::new(BTreeMap::new()), locomotives: RefCell::new(Vec::new()) };
     let value = call.new_object(base);
     // (The kit keeps the object; the last one made is found again through it, by its value.)
     let made = call.own_value::<DccBase>(&value);
@@ -86,36 +142,172 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
 }
 
 impl DccBase {
-    /// Sends a packet: onto the simulated track, where the decoders read its signal (with the track
-    /// power on), and into `packets`.
-    fn send(&self, packet: Vec<u8>, meaning: String) {
-        let heard = self.power.get() && {
-            let halves = dcc::timings(&dcc::bits(&packet));
-            let read = self.reader.borrow_mut().read(&halves);
+    fn simulated(&self) -> bool {
+        self.port.is_none()
+    }
+
+    /// The board's link, or the error saying why it can't be used.
+    fn with_link<T>(&self, what: &str, f: impl FnOnce(&Link) -> std::io::Result<T>) -> Result<T, Error> {
+        if let Some(lost) = self.lost.borrow().as_ref() {
+            return Err(hardware(format!("{what}: {lost}")));
+        }
+        match self.link.borrow().as_ref() {
+            Some(link) => f(link).map_err(|e| hardware(format!("{what}: can't talk to the board on {}: {e}", link.port))),
+            None => Err(hardware(format!("{what}: the base station is closed"))),
+        }
+    }
+
+    /// Takes in what the boards said since last time: the packets the reader heard (the decoders'
+    /// states, and `heard` on the packets sent), its timing, and the base station's own words (said
+    /// as warnings; its safety turning the power off among them).
+    fn take_heard(&self, call: &Call) {
+        let Some(link) = self.link.borrow().as_ref().map(|l| l.heard.clone()) else { return };
+        let (packets, said, timing, gone, reader_gone) = {
+            let mut h = link.lock().unwrap_or_else(|p| p.into_inner());
+            (std::mem::take(&mut h.packets), std::mem::take(&mut h.base_said), h.timing.clone(), h.gone.clone(), h.reader_gone.take())
+        };
+        if timing.is_some() {
+            *self.timing.borrow_mut() = timing;
+        }
+        if let Some(words) = reader_gone {
+            call.warn(words);
+            *self.timing.borrow_mut() = None;
+        }
+        for line in said {
+            if line.starts_with("OFF ") {
+                self.power.set(false);
+                call.warn(format!("the base station turned the track power off by itself: {}", line.trim_start_matches("OFF ")));
+            } else {
+                call.warn(format!("the base station on {} said: {line}", self.port.as_deref().unwrap_or("")));
+            }
+        }
+        if !packets.is_empty() {
+            let mut sent = self.sent.borrow_mut();
             let mut decoders = self.decoders.borrow_mut();
-            let mut any = false;
-            for data in read {
-                match dcc::target(&data) {
+            for packet in packets {
+                for s in sent.iter_mut().rev().filter(|s| s.bytes == packet && !s.heard) {
+                    s.heard = true;
+                }
+                // (The reader's packets carry their error byte; a decoder reads the data before it.)
+                let data = &packet[..packet.len().saturating_sub(1)];
+                match dcc::target(data) {
                     (Target::Locomotive(address, long), instruction) => {
-                        any |= dcc::obey(decoders.entry((address, long)).or_default(), instruction).is_some();
+                        dcc::obey(decoders.entry((address, long)).or_default(), instruction);
                     }
                     (Target::Broadcast, instruction) => {
-                        // (Every decoder obeys; one that hasn't heard anything yet has nothing to stop.)
                         for state in decoders.values_mut() {
                             dcc::obey(state, instruction);
                         }
-                        any = true;
                     }
                     _ => {}
                 }
             }
-            any
+        }
+        if let Some(gone) = gone
+            && self.lost.borrow().is_none()
+        {
+            self.power.set(false);
+            *self.lost.borrow_mut() = Some(gone);
+        }
+    }
+
+    /// A free place in the board's refresh table (None when all are in use).
+    fn take_place(&self) -> Option<u8> {
+        let used = self.places.get();
+        let free = (0..PLACES).find(|p| used & (1 << p) == 0)?;
+        self.places.set(used | (1 << free));
+        Some(free)
+    }
+
+    fn give_back_place(&self, place: u8) {
+        self.places.set(self.places.get() & !(1 << place));
+        if let Some(link) = self.link.borrow().as_ref() {
+            let _ = link.say(&format!("D {place}"));
+        }
+    }
+
+    /// The places an address's packets are kept in: the ones another locomotive object at the same
+    /// address has (so the board doesn't send two speeds in turn), else new ones. With a warning when
+    /// the table is full.
+    fn places_for(&self, address: u16, long: bool, call: &Call) -> (Option<u8>, Option<u8>) {
+        let mut shared = self.places_of.borrow_mut();
+        if let Some(entry) = shared.get_mut(&(address, long)) {
+            entry.2 += 1;
+            return (entry.0, entry.1);
+        }
+        let speed = self.take_place();
+        let lights = self.take_place();
+        match (speed, lights) {
+            (None, _) => call.warn(format!("the base station's refresh table is full ({PLACES} places): locomotive {address}'s speed and lights are sent once each time they change, not kept repeating")),
+            (Some(_), None) => call.warn(format!("the base station's refresh table is full ({PLACES} places): locomotive {address}'s lights are sent once each time they change, not kept repeating")),
+            _ => {}
+        }
+        shared.insert((address, long), (speed, lights, 1));
+        (speed, lights)
+    }
+
+    /// A locomotive object let go of its address's places: given back once no other one shares them.
+    fn release_places(&self, address: u16, long: bool) {
+        let gone = {
+            let mut shared = self.places_of.borrow_mut();
+            match shared.get_mut(&(address, long)) {
+                Some(entry) if entry.2 > 1 => {
+                    entry.2 -= 1;
+                    None
+                }
+                Some(_) => shared.remove(&(address, long)),
+                None => None,
+            }
+        };
+        if let Some((speed, lights, _)) = gone {
+            for place in [speed, lights].into_iter().flatten() {
+                self.give_back_place(place);
+            }
+        }
+    }
+
+    /// Sends a packet. Simulated: onto the track, where the decoders read its signal (with the track
+    /// power on). On a board: kept in its refresh table's place `keep`, or sent now. Either way into
+    /// `packets`.
+    fn send(&self, packet: Vec<u8>, meaning: String, keep: Option<u8>, call: &Call) -> Result<(), Error> {
+        let heard = if self.simulated() {
+            self.power.get() && {
+                let halves = dcc::timings(&dcc::bits(&packet));
+                let read = self.reader.borrow_mut().read(&halves);
+                let mut decoders = self.decoders.borrow_mut();
+                let mut any = false;
+                for data in read {
+                    match dcc::target(&data) {
+                        (Target::Locomotive(address, long), instruction) => {
+                            any |= dcc::obey(decoders.entry((address, long)).or_default(), instruction).is_some();
+                        }
+                        (Target::Broadcast, instruction) => {
+                            // (Every decoder obeys; one that hasn't heard anything yet has nothing to stop.)
+                            for state in decoders.values_mut() {
+                                dcc::obey(state, instruction);
+                            }
+                            any = true;
+                        }
+                        _ => {}
+                    }
+                }
+                any
+            }
+        } else {
+            self.take_heard(call);
+            let line = match keep {
+                Some(place) => format!("K {place} {}", dcc::hex(&packet)),
+                None => format!("S {}", dcc::hex(&packet)),
+            };
+            self.with_link("dcc_base", |l| l.say(&line))?;
+            false
         };
         let mut sent = self.sent.borrow_mut();
         if sent.len() == KEPT {
             sent.pop_front();
         }
         sent.push_back(Sent { bytes: packet, meaning, heard });
+        Ok(())
     }
 
     fn packets(&self) -> Value {
@@ -128,6 +320,36 @@ impl DccBase {
             ])
         }))
     }
+
+    fn timing_value(&self) -> Value {
+        let range = |r: Option<(f64, f64)>| match r {
+            Some((a, b)) => Value::list([Value::from(a), Value::from(b)]),
+            None => Value::Null,
+        };
+        match self.timing.borrow().as_ref() {
+            Some(t) => Value::map([
+                ("one", range(t.one)),
+                ("zero", range(t.zero)),
+                ("packets", Value::from(t.packets)),
+                ("outside", Value::from(t.outside)),
+                ("errors", Value::from(t.errors)),
+            ]),
+            None => Value::Null,
+        }
+    }
+
+    fn close(&self) {
+        if let Some(link) = self.link.borrow_mut().take() {
+            link.close();
+        }
+        self.power.set(false);
+    }
+}
+
+impl Drop for DccBase {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 impl Object for DccBase {
@@ -136,10 +358,14 @@ impl Object for DccBase {
     }
 
     fn get(&self, property: &str, call: &mut Call) -> Result<Value, Error> {
+        self.take_heard(call);
         match property {
-            "simulate" => Ok(true.into()),
+            "simulate" => Ok(self.simulated().into()),
+            "port" => Ok(self.port.clone().map_or(Value::Null, Value::from)),
+            "reader" => Ok(self.reader_port.clone().map_or(Value::Null, Value::from)),
             "power" => Ok(self.power.get().into()),
             "packets" => Ok(self.packets()),
+            "timing" => Ok(self.timing_value()),
             other => Err(call.unknown_property("dcc_base", other, BASE_PROPS)),
         }
     }
@@ -148,12 +374,21 @@ impl Object for DccBase {
         match property {
             "power" => match value {
                 Value::Bool(on) => {
+                    if !self.simulated() {
+                        self.take_heard(call);
+                        // (Off always works: with the board closed or its cable out, its power is off
+                        // already, or its safety turns it off within 3 seconds.)
+                        let reachable = self.lost.borrow().is_none() && self.link.borrow().is_some();
+                        if on || reachable {
+                            self.with_link("a dcc_base's `power`", |l| l.say(if on { "+" } else { "-" }))?;
+                        }
+                    }
                     self.power.set(on);
                     Ok(())
                 }
                 other => Err(Error::type_error(format!("a dcc_base's `power` is true or false, not {}", describe(&other)))),
             },
-            "simulate" | "packets" => Err(Error::type_error(format!("a dcc_base's `{property}` can be read but not set"))),
+            "simulate" | "port" | "reader" | "packets" | "timing" => Err(Error::type_error(format!("a dcc_base's `{property}` can be read but not set"))),
             other => Err(call.unknown_property("dcc_base", other, BASE_PROPS)),
         }
     }
@@ -163,9 +398,26 @@ impl Object for DccBase {
             "emergency_stop" => {
                 call.count_between(0, 0)?;
                 call.only_options(&[])?;
-                self.send(dcc::broadcast_emergency_stop(), "every locomotive: emergency stop".to_string());
+                if !self.simulated() {
+                    self.take_heard(call);
+                    if self.lost.borrow().is_some() || self.link.borrow().is_none() {
+                        // (A board out of reach sends nothing: its power is off, or its safety turns it
+                        // off within 3 seconds. The locomotives are stopped here all the same.)
+                        for loco in self.locomotives.borrow().iter().filter_map(Weak::upgrade) {
+                            loco.speed.set(0);
+                        }
+                        self.power.set(false);
+                        return Ok(Value::Null);
+                    }
+                }
+                self.send(dcc::broadcast_emergency_stop(), "every locomotive: emergency stop".to_string(), None, call)?;
                 for loco in self.locomotives.borrow().iter().filter_map(Weak::upgrade) {
                     loco.speed.set(0);
+                    // (On a board each locomotive's kept speed becomes its emergency stop too, or the
+                    // refresh table would start it again.)
+                    if !self.simulated() {
+                        loco.send_speed(true, call)?;
+                    }
                 }
                 Ok(Value::Null)
             }
@@ -174,6 +426,7 @@ impl Object for DccBase {
                 call.only_options(&["long"])?;
                 let long = bool_option(call, "long", false)?;
                 let address = address_of("dcc_base.decoder", call.arg(0), long)?;
+                self.take_heard(call);
                 Ok(match self.decoders.borrow().get(&(address, long)) {
                     Some(state) if state.heard > 0 => decoder_value(address, long, state),
                     _ => Value::Null,
@@ -183,6 +436,12 @@ impl Object for DccBase {
                 call.count_between(0, 0)?;
                 call.only_options(&[])?;
                 self.sent.borrow_mut().clear();
+                Ok(Value::Null)
+            }
+            "close" => {
+                call.count_between(0, 0)?;
+                call.only_options(&[])?;
+                self.close();
                 Ok(Value::Null)
             }
             other => Err(call.unknown_function("dcc_base", other, BASE_FUNCS)),
@@ -227,6 +486,9 @@ pub struct Locomotive {
     speed: Cell<u8>,
     forward: Cell<bool>,
     functions: Cell<[bool; dcc::FUNCTIONS]>,
+    /// On a board: the refresh table's places keeping its speed and its F0 to F4 (None: sent once).
+    speed_place: Option<u8>,
+    lights_place: Option<u8>,
 }
 
 /// `locomotive($address, long: false, base: ...)`.
@@ -244,9 +506,10 @@ pub fn new_locomotive(call: &mut Call) -> Result<Value, Error> {
     let address = address_of("locomotive", call.arg(0), long)?;
     let base = match base.or_else(|| LAST.with(|l| l.borrow().upgrade())) {
         Some(b) => b,
-        None => return Err(hardware("locomotive(): there is no base station: make one first, dcc_base(simulate: true)")),
+        None => return Err(hardware("locomotive(): there is no base station: make one first, dcc_base(\"/dev/ttyACM0\") or dcc_base(simulate: true)")),
     };
-    let value = call.new_object(Locomotive { base: base.clone(), address, long, speed: Cell::new(0), forward: Cell::new(true), functions: Cell::new([false; dcc::FUNCTIONS]) });
+    let (speed_place, lights_place) = if base.simulated() { (None, None) } else { base.places_for(address, long, call) };
+    let value = call.new_object(Locomotive { base: base.clone(), address, long, speed: Cell::new(0), forward: Cell::new(true), functions: Cell::new([false; dcc::FUNCTIONS]), speed_place, lights_place });
     if let Some(loco) = call.own_value::<Locomotive>(&value) {
         let mut kept = base.locomotives.borrow_mut();
         kept.retain(|w| w.strong_count() > 0);
@@ -255,12 +518,22 @@ pub fn new_locomotive(call: &mut Call) -> Result<Value, Error> {
     Ok(value)
 }
 
+impl Drop for Locomotive {
+    fn drop(&mut self) {
+        // (A locomotive the script let go of is no longer kept repeating on the board, once no other
+        // object at its address is.)
+        if !self.base.simulated() {
+            self.base.release_places(self.address, self.long);
+        }
+    }
+}
+
 impl Locomotive {
     fn name(&self) -> String {
         if self.long && self.address <= dcc::SHORT_MOST { format!("locomotive {} (long)", self.address) } else { format!("locomotive {}", self.address) }
     }
 
-    fn send_speed(&self, emergency: bool) {
+    fn send_speed(&self, emergency: bool, call: &Call) -> Result<(), Error> {
         let words = if emergency {
             "emergency stop".to_string()
         } else if self.speed.get() == 0 {
@@ -270,16 +543,18 @@ impl Locomotive {
         };
         let direction = if self.forward.get() { "forward" } else { "reverse" };
         let packet = dcc::speed_128(self.address, self.long, self.speed.get(), self.forward.get(), emergency);
-        self.base.send(packet, format!("{}: {words}, {direction}", self.name()));
+        self.base.send(packet, format!("{}: {words}, {direction}", self.name()), self.speed_place, call)
     }
 
-    fn send_functions(&self, group: usize) {
+    fn send_functions(&self, group: usize, call: &Call) -> Result<(), Error> {
         let on = self.functions.get();
         let packet = dcc::functions(self.address, self.long, group, &on);
         let (first, last) = [(0, 4), (5, 8), (9, 12), (13, 20), (21, 28)][group];
         let lit: Vec<String> = (first..=last).filter(|n| on[*n]).map(|n| format!("F{n}")).collect();
         let which = if lit.is_empty() { "all off".to_string() } else { format!("{} on, the rest off", lit.join(", ")) };
-        self.base.send(packet, format!("{}: functions F{first} to F{last}: {which}", self.name()));
+        // (F0 to F4, the lights among them, are kept repeating; the others are sent now.)
+        let keep = if group == 0 { self.lights_place } else { None };
+        self.base.send(packet, format!("{}: functions F{first} to F{last}: {which}", self.name()), keep, call)
     }
 }
 
@@ -315,8 +590,7 @@ impl Object for Locomotive {
                     return Err(Error::range_error(format!("a locomotive's `speed` is 0 to 126 (the 128 speed steps), not {n}")));
                 }
                 self.speed.set(n as u8);
-                self.send_speed(false);
-                Ok(())
+                self.send_speed(false, call)
             }
             "direction" => {
                 let forward = match value.as_text() {
@@ -325,8 +599,7 @@ impl Object for Locomotive {
                     _ => return Err(Error::type_error(format!("a locomotive's `direction` is \"forward\" or \"reverse\", not {}", describe(&value)))),
                 };
                 self.forward.set(forward);
-                self.send_speed(false);
-                Ok(())
+                self.send_speed(false, call)
             }
             "address" | "long" | "base" => Err(Error::type_error(format!("a locomotive's `{property}` can be read but not set"))),
             other => Err(call.unknown_property("locomotive", other, LOCO_PROPS)),
@@ -344,7 +617,7 @@ impl Object for Locomotive {
                 let mut all = self.functions.get();
                 all[n] = on;
                 self.functions.set(all);
-                self.send_functions(dcc::group_of(n));
+                self.send_functions(dcc::group_of(n), call)?;
                 Ok(Value::Null)
             }
             "function" => {
@@ -357,10 +630,146 @@ impl Object for Locomotive {
                 call.count_between(0, 0)?;
                 call.only_options(&[])?;
                 self.speed.set(0);
-                self.send_speed(function == "emergency_stop");
+                self.send_speed(function == "emergency_stop", call)?;
                 Ok(Value::Null)
             }
             other => Err(call.unknown_function("locomotive", other, LOCO_FUNCS)),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The boards' ports, and loading their programs
+
+/// `dcc_ports()`: the USB serial ports plugged in, each `["port", "name", "vendor_id", "product_id",
+/// "allowed"]`.
+pub fn dcc_ports(call: &mut Call) -> Result<Value, Error> {
+    call.count_between(0, 0)?;
+    call.only_options(&[])?;
+    Ok(Value::list(board::ports().into_iter().map(|p| {
+        Value::map([
+            ("port", Value::from(p.port)),
+            ("name", Value::from(p.name)),
+            ("vendor_id", Value::from(p.vendor_id)),
+            ("product_id", Value::from(p.product_id)),
+            ("allowed", Value::from(p.allowed)),
+        ])
+    })))
+}
+
+const JOB_PROPS: &[&str] = &["port", "role", "board", "finished", "succeeded", "message"];
+const JOB_FUNCS: &[&str] = &["wait"];
+
+/// Loading a program onto a board, in the background: `load_dcc_program()`'s object.
+pub struct DccProgramJob {
+    port: String,
+    role: String,
+    board: String,
+    state: std::sync::Arc<std::sync::Mutex<board::JobState>>,
+}
+
+/// `load_dcc_program($port, "base" or "reader", board: ..., arduino_cli: ...)`.
+pub fn load_dcc_program(call: &mut Call) -> Result<Value, Error> {
+    call.count_between(2, 2)?;
+    call.only_options(&["board", "arduino_cli"])?;
+    let port = match call.arg(0) {
+        Value::Text(p) if p.starts_with('/') => p.clone(),
+        Value::Text(p) => return Err(Error::type_error(format!("load_dcc_program(): {p:?} isn't a port: give its whole path, like \"/dev/ttyACM0\" (dcc_ports() lists them)"))),
+        other => return Err(Error::type_error(format!("load_dcc_program()'s port is text, like \"/dev/ttyACM0\", not {}", describe(other)))),
+    };
+    let role = match call.arg(1).as_text() {
+        Some(r @ ("base" | "reader")) => r.to_string(),
+        _ => return Err(Error::type_error(format!("load_dcc_program()'s program is \"base\" (the base station) or \"reader\" (the board reading the signal back), not {}", describe(call.arg(1))))),
+    };
+    let board = text_option(call, "board")?.unwrap_or_else(|| if role == "base" { "arduino:avr:mega".into() } else { "arduino:avr:uno".into() });
+    if board.starts_with('-') || board.split(':').count() < 3 {
+        return Err(Error::type_error(format!("load_dcc_program()'s `board:` is arduino-cli's name for the board, like \"arduino:avr:mega\", \"arduino:avr:uno\", or \"arduino:avr:nano\", not {board:?}")).at(call.option_line("board")));
+    }
+    // (The base station's signal comes from Timer1's OC1B, which is pin 12 on a Mega 2560 only; the
+    // reader's input capture is pin 8 on the ATmega328P boards.)
+    let kind = board.split(':').nth(2).unwrap_or("");
+    let fits = if role == "base" { matches!(kind, "mega" | "megaADK") } else { matches!(kind, "uno" | "nano" | "pro") };
+    if !fits {
+        let wanted = if role == "base" { "an Arduino Mega 2560 (\"arduino:avr:mega\")" } else { "an Arduino Uno, Nano, or Pro Mini (\"arduino:avr:uno\", \"arduino:avr:nano\", \"arduino:avr:pro\")" };
+        return Err(Error::type_error(format!("load_dcc_program(): Leah's {} program runs on {wanted}, not {board:?}", if role == "base" { "base station" } else { "reader" })).at(call.option_line("board")));
+    }
+    let cli = board::find_arduino_cli(text_option(call, "arduino_cli")?.as_deref()).map_err(|e| Error::new("shell_error", format!("load_dcc_program(): {e}")))?;
+    // (The program's text, its build, and arduino-cli's cache go in a temporary folder of the
+    // script's own, which Leah removes at the end.)
+    let folder = match call.builtin("make_temp_path", vec![], vec![])? {
+        Value::Text(t) => std::path::PathBuf::from(t),
+        other => return Err(Error::new("file_error", format!("load_dcc_program(): no temporary folder ({})", describe(&other)))),
+    };
+    let state = std::sync::Arc::new(std::sync::Mutex::new(board::JobState::default()));
+    let thread_state = state.clone();
+    let (p, r, b) = (port.clone(), role.clone(), board.clone());
+    Ok(call.new_object_with_events(move |events| {
+        events.keep_running(true);
+        let spawned = std::thread::Builder::new().name("leah-dcc-load".into()).spawn({
+            let events = events.clone();
+            move || {
+                let done = board::load_program(&cli, &folder, &p, &r, &b);
+                let (succeeded, message) = match done {
+                    Ok(m) => (true, m),
+                    Err(m) => (false, m),
+                };
+                {
+                    let mut s = thread_state.lock().unwrap_or_else(|x| x.into_inner());
+                    *s = board::JobState { finished: true, succeeded, message: message.clone() };
+                }
+                events.fire("on_finished", vec![Value::from(succeeded), Value::from(message)]);
+                events.keep_running(false);
+            }
+        });
+        if let Err(e) = spawned {
+            let mut s = state.lock().unwrap_or_else(|x| x.into_inner());
+            *s = board::JobState { finished: true, succeeded: false, message: format!("can't start loading: {e}") };
+            events.keep_running(false);
+        }
+        DccProgramJob { port, role, board, state }
+    }))
+}
+
+impl Object for DccProgramJob {
+    fn kind(&self) -> &str {
+        "dcc_program_job"
+    }
+
+    fn get(&self, property: &str, call: &mut Call) -> Result<Value, Error> {
+        let s = self.state.lock().unwrap_or_else(|x| x.into_inner()).clone();
+        match property {
+            "port" => Ok(self.port.clone().into()),
+            "role" => Ok(self.role.clone().into()),
+            "board" => Ok(self.board.clone().into()),
+            "finished" => Ok(s.finished.into()),
+            "succeeded" => Ok(s.succeeded.into()),
+            "message" => Ok(if s.finished { Value::from(s.message) } else { Value::Null }),
+            other => Err(call.unknown_property("dcc_program_job", other, JOB_PROPS)),
+        }
+    }
+
+    fn set(&self, property: &str, _value: Value, call: &mut Call) -> Result<(), Error> {
+        if JOB_PROPS.contains(&property) {
+            Err(Error::type_error(format!("a dcc_program_job's `{property}` can be read but not set")))
+        } else {
+            Err(call.unknown_property("dcc_program_job", property, JOB_PROPS))
+        }
+    }
+
+    fn call(&self, function: &str, call: &mut Call) -> Result<Value, Error> {
+        match function {
+            "wait" => {
+                call.count_between(0, 0)?;
+                call.only_options(&[])?;
+                loop {
+                    let s = self.state.lock().unwrap_or_else(|x| x.into_inner()).clone();
+                    if s.finished {
+                        return Ok(s.succeeded.into());
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+            other => Err(call.unknown_function("dcc_program_job", other, JOB_FUNCS)),
         }
     }
 }

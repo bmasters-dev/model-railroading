@@ -1,0 +1,230 @@
+` The icon helpers of the Leah IDE's tools/make_icons.leah (bmasters-dev/leah-ide), copied as they were
+` on 2026-11-10 so this addon draws its icons in the same style without the IDE: a grid of 16 units,
+` a unit a pixel at 16 × 16 and two at 32 × 32. Used by make_icons.leah.
+
+module ic {
+    ` the picture being drawn on, its graphics, and its pixels per unit
+    $picture = null
+    $g = null
+    $s = 1
+
+    const face = "#FFFFFF"
+    const edge = "#5B6779"
+    const ink = "#2E3646"
+    const soft = "#E3E8EF"
+    const mid = "#A9B3C1"
+    const accent = "#2F7BE5"
+    const accent_dark = "#1F5DB8"
+    const accent_light = "#CFE0FA"
+    const green = "#2DA44E"
+    const orange = "#F08C1A"
+    const red = "#E0393E"
+    const yellow = "#F5C02C"
+    const purple = "#8957E5"
+
+    const glyphs = [ _
+        "A": [".#.", "#.#", "###", "#.#", "#.#"], "a": ["...", ".##", "#.#", "#.#", ".##"], _
+        "B": ["##.", "#.#", "##.", "#.#", "##."], "D": ["##.", "#.#", "#.#", "#.#", "##."], _
+        "F": ["###", "#..", "##.", "#..", "#.."], "P": ["##.", "#.#", "##.", "#..", "#.."], _
+        "1": [".#.", "##.", ".#.", ".#.", "###"], "2": ["##.", "..#", ".#.", "#..", "###"]]
+
+    function begin($size) {
+        $picture = picture(width: $size, height: $size)
+        $g = $picture.graphics
+        $g.anti_aliased = true
+        $s = $size / 16
+        return $picture
+    }
+
+    function big() {
+        return $s >= 2
+    }
+
+    ` A rectangle filled, in units.
+    function fill($x, $y, $w, $h, $c) {
+        $g.drawing_color = $c
+        $g.fill_rectangle($x * $s, $y * $s, $w * $s, $h * $s)
+    }
+
+    ` A rectangle's outline, one unit thick, inside it.
+    function frame($x, $y, $w, $h, $c) {
+        fill($x, $y, $w, 1, $c)
+        fill($x, $y + $h - 1, $w, 1, $c)
+        fill($x, $y + 1, 1, $h - 2, $c)
+        fill($x + $w - 1, $y + 1, 1, $h - 2, $c)
+    }
+
+    ` A box with a face and an edge one unit thick.
+    function box($x, $y, $w, $h, $face, $edge) {
+        fill($x, $y, $w, $h, $face)
+        frame($x, $y, $w, $h, $edge)
+    }
+
+    ` A box with round corners: corners cut by a pixel at 16 × 16, smooth at 32 × 32.
+    function rbox($x, $y, $w, $h, $face, $edge, $radius = 2) {
+        if big() {
+            $g.drawing_color = $edge
+            $g.fill_round_rectangle($x * $s, $y * $s, $w * $s, $h * $s, $radius * $s)
+            $g.drawing_color = $face
+            $g.fill_round_rectangle($x * $s + $s, $y * $s + $s, $w * $s - 2 * $s, $h * $s - 2 * $s, maximum(0, $radius * $s - $s))
+            return
+        }
+        fill($x + 1, $y + 1, $w - 2, $h - 2, $face)
+        fill($x + 1, $y, $w - 2, 1, $edge)
+        fill($x + 1, $y + $h - 1, $w - 2, 1, $edge)
+        fill($x, $y + 1, 1, $h - 2, $edge)
+        fill($x + $w - 1, $y + 1, 1, $h - 2, $edge)
+    }
+
+    ` A filled rounded rectangle, no edge.
+    function rfill($x, $y, $w, $h, $c, $radius = 2) {
+        if big() {
+            $g.drawing_color = $c
+            $g.fill_round_rectangle($x * $s, $y * $s, $w * $s, $h * $s, $radius * $s)
+            return
+        }
+        fill($x + 1, $y, $w - 2, $h, $c)
+        fill($x, $y + 1, $w, $h - 2, $c)
+    }
+
+    ` A circle by its box, with a face and an edge (null for none).
+    function circle($x, $y, $w, $h, $face, $edge = null) {
+        if $edge != null {
+            $g.drawing_color = $edge
+            $g.fill_oval($x * $s, $y * $s, $w * $s, $h * $s)
+            $g.drawing_color = $face
+            $g.fill_oval($x * $s + $s, $y * $s + $s, $w * $s - 2 * $s, $h * $s - 2 * $s)
+        } else {
+            $g.drawing_color = $face
+            $g.fill_oval($x * $s, $y * $s, $w * $s, $h * $s)
+        }
+    }
+
+    ` A ring: a circle's edge alone.
+    function ring($x, $y, $w, $h, $c, $width = 1) {
+        $g.drawing_color = $c
+        $g.pen_size = $width * $s
+        $g.draw_oval($x * $s, $y * $s, $w * $s, $h * $s)
+        $g.pen_size = 1
+    }
+
+    ` An arc of a circle around cx, cy, from one angle to another (degrees, clockwise from 3 o'clock).
+    function arc($cx, $cy, $r, $from, $to, $c, $width = 1) {
+        $path = graphics_path()
+        $path.add_arc($cx * $s, $cy * $s, $r * $s, $from, $to)
+        $g.drawing_color = $c
+        $g.pen_size = $width * $s
+        $g.line_cap = "butt"
+        $g.draw_path($path)
+        $g.pen_size = 1
+    }
+
+    ` A curve from one point to another through two control points (a cubic Bézier).
+    function curve($from, $c1, $c2, $to, $c, $width = 1) {
+        $path = graphics_path()
+        $path.move_to_point($from[0] * $s, $from[1] * $s)
+        $path.add_curve_to_point($c1[0] * $s, $c1[1] * $s, $c2[0] * $s, $c2[1] * $s, $to[0] * $s, $to[1] * $s)
+        $g.drawing_color = $c
+        $g.pen_size = $width * $s
+        $g.draw_path($path)
+        $g.pen_size = 1
+    }
+
+    ` A rectangle's outline with a pen of `width` units.
+    function outline($x, $y, $w, $h, $c, $width = 1) {
+        $g.drawing_color = $c
+        $g.pen_size = $width * $s
+        $g.draw_rectangle($x * $s, $y * $s, $w * $s, $h * $s)
+        $g.pen_size = 1
+    }
+
+    ` A rounded outline turned around the icon's middle (degrees), centred at dx, dy from it there.
+    function turned_outline($degrees, $dx, $dy, $w, $h, $radius, $c, $width = 1) {
+        $g.save_state()
+        $g.move_origin(8 * $s, 8 * $s)
+        $g.rotate($degrees)
+        $g.drawing_color = $c
+        $g.pen_size = $width * $s
+        $g.draw_round_rectangle(($dx - $w / 2) * $s, ($dy - $h / 2) * $s, $w * $s, $h * $s, $radius * $s)
+        $g.restore_state()
+        $g.pen_size = 1
+    }
+
+    ` A small eye at the bottom right, on a white disc: the watchers' mark.
+    function eye_badge() {
+        circle(7.5, 7.5, 8.5, 8.5, face, edge)
+        shape([[9, 11.75], [10.4, 10.2], [11.75, 9.6], [13.1, 10.2], [14.5, 11.75], [13.1, 13.3], [11.75, 13.9], [10.4, 13.3]], accent)
+        circle(10.75, 10.75, 2, 2, face)
+    }
+
+    ` A terminal: a dark screen with a prompt.
+    function terminal($prompt_color) {
+        rbox(1, 2, 14, 12, ink, edge)
+        stroke([[3.5, 5.5], [5.5, 7.5], [3.5, 9.5]], $prompt_color, 1.1)
+        fill(7, 9, 4, 1, $prompt_color)
+    }
+
+    ` The white tile under an icon drawn in ink alone, so it shows on a dark ground too.
+    function tile() {
+        rbox(1, 1, 14, 14, face, edge)
+    }
+
+    ` A filled shape through points given in units.
+    function shape($points, $c) {
+        $g.drawing_color = $c
+        $g.fill_polygon(map($points, fn($p) => [$p[0] * $s, $p[1] * $s]))
+    }
+
+    ` Lines through points, in units, `width` units thick, with round ends.
+    function stroke($points, $c, $width = 1) {
+        $g.drawing_color = $c
+        $g.pen_size = $width * $s
+        $g.line_cap = "round"
+        $g.line_join = "round"
+        for $i = 1 to count($points) - 1 {
+            $g.draw_line($points[$i - 1][0] * $s, $points[$i - 1][1] * $s, $points[$i][0] * $s, $points[$i][1] * $s)
+        }
+        $g.pen_size = 1
+    }
+
+    ` Small letters (A a B D F P 1 2), with their top-left corner at x, y, five units tall: drawn from
+    ` pixels at 16 × 16, as real letters at 32 × 32.
+    function letters($text, $x, $y, $c) {
+        if big() {
+            $g.drawing_color = $c
+            $g.font_name = "Sans"
+            $g.bold = true
+            $g.font_size = 7.5 * $s
+            $g.draw_text($text, $x * $s - 0.5 * $s, ($y + 5) * $s)
+            $g.bold = false
+            return
+        }
+        $at = $x
+        foreach characters($text) as $ch {
+            $rows = glyphs[$ch]
+            for $row = 0 to 4 {
+                for $col = 0 to 2 {
+                    if middle($rows[$row], $col, 1) == "#" {
+                        fill($at + $col, $y + $row, 1, 1, $c)
+                    }
+                }
+            }
+            $at = $at + 4
+        }
+    }
+
+    ` Words drawn as a bar, one unit tall.
+    function words($x, $y, $w, $c = null) {
+        fill($x, $y, $w, 1, $c ?? ink)
+    }
+
+    ` A small triangle pointing down (or up), its top-left at x, y, `w` units wide.
+    function chevron($x, $y, $w, $c, $up = false) {
+        $h = $w / 2
+        if $up {
+            shape([[$x, $y + $h], [$x + $w, $y + $h], [$x + $w / 2, $y]], $c)
+        } else {
+            shape([[$x, $y], [$x + $w, $y], [$x + $w / 2, $y + $h]], $c)
+        }
+    }
+}

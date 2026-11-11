@@ -1,0 +1,320 @@
+` A DCC throttle on Leah's own base station board, checked by a second board: the safe ladder's step 2
+` (design/model_railroading.md, "Stage 1b"). No motor shield, no track, no locomotive: the base station
+` (an Arduino Mega) makes the real DCC signal as 5 V logic on its pin 12, and the reader (an Arduino Uno
+` or Nano, its pin 8 joined to the Mega's pin 12 through a 1 kOhm resistor, the grounds joined) reads it
+` back as a decoder would, and tells Leah what it heard and how long each half-bit lasted.
+`
+` Choose the two boards' ports, load Leah's programs onto them once, connect, and drive.
+
+$base = null
+$loco = null
+$shown = ""
+` (The programs being loaded, kept so their on_finished still runs.)
+$loading = []
+
+$win = window(title: "DCC bench", width: 860, height: 600, minimum_width: 780, minimum_height: 560)
+
+` -- the boards --
+$boards_box = group_box(left: 20, top: 16, width: 820, height: 170, text: "The boards", lock_right: true)
+$win.add($boards_box)
+
+$base_label = label(left: 36, top: 48, width: 150, text: "Base station (Mega):")
+$win.add($base_label)
+$base_port = popup_menu(left: 190, top: 44, width: 330)
+$win.add($base_port)
+
+$reader_label = label(left: 36, top: 84, width: 150, text: "Reader (Uno or Nano):")
+$win.add($reader_label)
+$reader_port = popup_menu(left: 190, top: 80, width: 330)
+$win.add($reader_port)
+
+$refresh = button(left: 536, top: 44, width: 140, text: "Look again")
+$win.add($refresh)
+$load = button(left: 536, top: 80, width: 140, text: "Load programs")
+$win.add($load)
+$connect = button(left: 690, top: 44, width: 136, height: 64, text: "Connect", lock_left: false, lock_right: true)
+$win.add($connect)
+
+$status = label(left: 36, top: 118, width: 640, height: 56, text: "", multi_line: true, lock_right: true)
+$win.add($status)
+` (Shown when Linux doesn't let this account use the boards yet.)
+$give_access = button(left: 690, top: 122, width: 136, height: 44, text: "Give access", lock_left: false, lock_right: true, visible: false)
+$win.add($give_access)
+
+` -- the throttle --
+$top = 210
+$power = switch(left: 20, top: $top, text: "Track power", enabled: false)
+$win.add($power)
+$speed_label = label(left: 20, top: $top + 44, width: 260, text: "Speed 0 of 126")
+$win.add($speed_label)
+$throttle = slider(left: 20, top: $top + 68, width: 260, minimum_value: 0, maximum_value: 126, enabled: false)
+$win.add($throttle)
+$reverse = checkbox(left: 20, top: $top + 108, text: "Reverse", enabled: false)
+$win.add($reverse)
+$headlight = checkbox(left: 140, top: $top + 108, text: "Headlight (F0)", enabled: false)
+$win.add($headlight)
+$stop = button(left: 20, top: $top + 144, width: 260, height: 44, text: "Emergency stop", enabled: false)
+$win.add($stop)
+
+` -- what the reader heard --
+$heard_box = group_box(left: 300, top: $top - 12, width: 540, height: 212, text: "What the reader heard", lock_right: true)
+$win.add($heard_box)
+$decoder_text = label(left: 316, top: $top + 18, width: 510, height: 44, lock_right: true, multi_line: true, text: "Not connected.")
+$win.add($decoder_text)
+$timing_text = label(left: 316, top: $top + 70, width: 510, height: 64, lock_right: true, multi_line: true, text: "")
+$win.add($timing_text)
+$verdict = label(left: 316, top: $top + 146, width: 510, height: 40, lock_right: true, text: "", multi_line: true)
+$win.add($verdict)
+
+` -- the packets sent --
+$packets = list_box(left: 20, top: $top + 210, width: 820, height: 130, column_count: 3, has_header: true, _
+    column_widths: "150, *, 70", lock_right: true, lock_bottom: true)
+$packets.headers = ["Bytes", "Meaning", "Heard"]
+$win.add($packets)
+
+` Fills the two lists of ports, guessing which board is which, and asks for permission when Linux
+` doesn't let this account open them yet.
+function look_for_boards() {
+    global $base_port, $reader_port, $give_access, $status
+    $ports = dcc_ports()
+    $base_port.remove_all_rows()
+    $reader_port.remove_all_rows()
+    $reader_port.add_row("No reader", tag: null)
+    $refused = false
+    foreach $ports as $p {
+        $words = $p["port"] + ": " + $p["name"] + (if $p["allowed"] then "" else " (not allowed yet)")
+        $base_port.add_row($words, tag: $p["port"])
+        $reader_port.add_row($words, tag: $p["port"])
+        if not $p["allowed"] {
+            $refused = true
+        }
+    }
+    ` A Mega is most likely the base station, and the other board the reader.
+    $base_port.selected_row_index = 0
+    $reader_port.selected_row_index = 0
+    foreach $ports as $i: $p {
+        if starts_with($p["name"], "Arduino Mega") {
+            $base_port.selected_row_index = $i
+        }
+    }
+    foreach $ports as $i: $p {
+        if $p["port"] != $base_port.selected_row_tag {
+            $reader_port.selected_row_index = $i + 1
+            break
+        }
+    }
+    $give_access.visible = $refused
+    if count($ports) == 0 {
+        $status.text = "No board is plugged in: plug the boards into USB, then press Look again."
+    } else if $refused {
+        $status.text = "Linux needs your permission before apps can talk to a board over USB. It is asked once: " _
+            + "Give access adds your account to the group that may use such boards (it asks for your password)."
+    } else {
+        $status.text = "Found " + count($ports) + " board" + (if count($ports) == 1 then "" else "s") + ". Load the programs once, then Connect."
+    }
+}
+
+$refresh.on_click = function() {
+    look_for_boards()
+}
+
+$give_access.on_click = function() {
+    global $status, $give_access
+    if not function_exists("fix_device_access") {
+        $status.text = "Ask the computer's administrator to add your account to the dialout group, or type " _
+            + "this in a terminal: sudo usermod -aG dialout $USER  Then log out and back in once."
+        return
+    }
+    try {
+        $added = call_function("fix_device_access", ["serial"])
+        $status.text = (if $added then "Done. " else "Your account already has the permission. ") _
+            + "Log out of the computer and back in once: the permission counts from then on."
+        $give_access.visible = false
+    } catch $e {
+        $status.text = "That didn't work: " + $e.message
+    }
+}
+
+` Loads Leah's programs onto both boards, one after the other.
+$load.on_click = function() {
+    global $base, $base_port, $reader_port, $status, $load, $connect, $loading
+    if $base != null {
+        $status.text = "Disconnect first: a board's program can't be loaded while Leah is connected to it."
+        return
+    }
+    if $base_port.selected_row_tag == null {
+        $status.text = "Choose the base station's port first."
+        return
+    }
+    $load.enabled = false
+    $connect.enabled = false
+    $status.text = "Loading the base station's program onto " + $base_port.selected_row_tag + " (about 15 seconds)..."
+    $job = load_dcc_program($base_port.selected_row_tag, "base")
+    $loading[] = $job
+    $job.on_finished = function($ok, $message) {
+        global $reader_port, $status, $load, $connect, $loading
+        if not $ok or $reader_port.selected_row_tag == null {
+            $status.text = $message
+            $loading = []
+            $load.enabled = true
+            $connect.enabled = true
+            return
+        }
+        $status.text = $message + ". Now the reader's, onto " + $reader_port.selected_row_tag + "..."
+        $second = load_dcc_program($reader_port.selected_row_tag, "reader")
+        $loading[] = $second
+        $second.on_finished = function($ok, $message) {
+            global $status, $load, $connect
+            $status.text = $message + (if $ok then ". Press Connect." else "")
+            $loading = []
+            $load.enabled = true
+            $connect.enabled = true
+        }
+    }
+}
+
+function set_throttle_enabled($on) {
+    global $power, $throttle, $reverse, $headlight, $stop
+    foreach [$power, $throttle, $reverse, $headlight, $stop] as $c {
+        $c.enabled = $on
+    }
+}
+
+$connect.on_click = function() {
+    global $base, $loco, $base_port, $reader_port, $status, $connect, $power, $throttle, $reverse, $headlight, $decoder_text
+    if $base != null {
+        $base.close()
+        $base = null
+        $loco = null
+        $connect.text = "Connect"
+        $power.value = false
+        set_throttle_enabled(false)
+        $decoder_text.text = "Not connected."
+        $status.text = "Disconnected: the base station's track power is off."
+        return
+    }
+    $status.text = "Connecting (the boards start their programs again as Leah opens them)..."
+    call_later(50, function() {
+        global $base, $loco, $base_port, $reader_port, $status, $connect, $throttle, $reverse, $headlight
+        try {
+            $base = dcc_base($base_port.selected_row_tag, reader: $reader_port.selected_row_tag)
+        } catch $e {
+            $status.text = $e.message
+            return
+        }
+        $loco = locomotive(3)
+        $throttle.value = 0
+        $reverse.value = false
+        $headlight.value = false
+        $connect.text = "Disconnect"
+        set_throttle_enabled(true)
+        $status.text = "Connected to " + $base.port + (if $base.reader == null then ", with no reader." else ", read back by " + $base.reader + ".") _
+            + " Turn the track power on to start the signal."
+    })
+}
+
+$power.on_value_changed = function() {
+    global $base, $power
+    if $base != null {
+        $base.power = $power.value
+    }
+}
+
+$throttle.on_value_changed = function() {
+    global $loco, $throttle, $speed_label
+    $speed_label.text = "Speed " + round($throttle.value) + " of 126"
+    if $loco != null and $loco.speed != round($throttle.value) {
+        $loco.speed = round($throttle.value)
+    }
+}
+
+$reverse.on_value_changed = function() {
+    global $loco, $reverse
+    if $loco != null {
+        $loco.direction = if $reverse.value then "reverse" else "forward"
+    }
+}
+
+$headlight.on_value_changed = function() {
+    global $loco, $headlight
+    if $loco != null {
+        $loco.set_function(0, $headlight.value)
+    }
+}
+
+$stop.on_click = function() {
+    global $base, $throttle
+    if $base != null {
+        $base.emergency_stop()
+        $throttle.value = 0
+    }
+}
+
+` A half-bit's measured range, as words.
+function range_words($range) {
+    if $range == null {
+        return "none"
+    }
+    return format_number($range[0], decimals: 1) + " to " + format_number($range[1], decimals: 1) + " µs"
+}
+
+` Every 200 ms: what the reader heard, how long the half-bits were, and the packets sent.
+$clock = timer(period: 200, run_mode: "multiple")
+$clock.on_run = function() {
+    global $base, $loco, $power, $decoder_text, $timing_text, $verdict, $packets, $shown
+    if $base == null {
+        $timing_text.text = ""
+        $verdict.text = ""
+        return
+    }
+    if $power.value and not $base.power {
+        ` (The base station turned the power off by itself: the PC had gone quiet.)
+        $power.value = false
+    }
+    $state = $base.decoder($loco.address)
+    if $base.reader == null {
+        $decoder_text.text = "No reader: choose one to see what a decoder would hear."
+    } else if $state == null {
+        $decoder_text.text = "Decoder 3 hasn't heard anything yet" + (if $base.power then "." else ": the track power is off.")
+    } else {
+        $decoder_text.text = "Decoder 3 heard: speed " + $state["speed"] + ", " + $state["direction"] _
+            + ", headlight " + (if $state["functions"][0] then "on" else "off") + "."
+    }
+    $t = $base.timing
+    if $t == null {
+        $timing_text.text = ""
+        $verdict.text = ""
+    } else {
+        $timing_text.text = "Last second: a 1's halves " + range_words($t["one"]) + ", a 0's halves " + range_words($t["zero"]) + "." _
+            + end_of_line + $t["packets"] + " packets, " + $t["outside"] + " half-bits outside the limits, " _
+            + $t["errors"] + " packets with a wrong error byte."
+        if $t["one"] == null {
+            $verdict.text = "No signal."
+            $verdict.text_color = "#8C95A3"
+        } else if $t["one"][0] >= 55 and $t["one"][1] <= 61 and $t["zero"] != null and $t["zero"][0] >= 95 and $t["errors"] == 0 {
+            $verdict.text = "Within the NMRA's limits for a command station (a 1's half 55 to 61 µs, a 0's at least 95 µs)."
+            $verdict.text_color = color_group(light: "#1E7B34", dark: "#5FD47A")
+        } else {
+            $verdict.text = "Outside the NMRA's limits: don't put this on a track."
+            $verdict.text_color = "#E0393E"
+        }
+    }
+    $sent = $base.packets
+    $heard = 0
+    foreach $sent as $p {
+        if $p["heard"] {
+            $heard++
+        }
+    }
+    $now = if count($sent) == 0 then "" else count($sent) + " " + $heard + " " + last($sent)["meaning"]
+    if $now != $shown {
+        $packets.remove_all_rows()
+        foreach reverse($sent) as $p {
+            $packets.add_row($p["bytes"], $p["meaning"], if $p["heard"] then "yes" else "not yet")
+        }
+        $shown = $now
+    }
+}
+
+look_for_boards()
+$win.show()

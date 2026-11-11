@@ -4,11 +4,18 @@ version = 4
 
 [[package]]
 name = "leah-addon-kit"
-version = "0.1.0-alpha.45"
+version = "0.1.0-alpha.47"
 
 [[package]]
 name = "leah-addon-model-railroading"
 version = "0.1.0"
 dependencies = [
  "leah-addon-kit",
+ "libc",
 ]
+
+[[package]]
+name = "libc"
+version = "0.2.190"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"

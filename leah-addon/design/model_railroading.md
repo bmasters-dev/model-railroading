@@ -2,7 +2,7 @@
 
 **A 3rd-party addon since 2026-11-09 (the owner's decision: the test of Leah's 3rd-party addon system; Maker stays one of Leah's own):** this repository, `bmasters-dev/model-railroading` (`leah-addon/`), built with Leah's addon kit and installed by `leah --install-addon https://github.com/bmasters-dev/model-railroading`, its releases tagged `leah-addon-v<version>`. So it reaches Leah only through the kit: it opens the base station board's serial port itself (its own crate, not Leah's serial port) and sends its own board program (it can't use the Maker addon's). Its issues are in this repository; the links below to Leah's specs and issues are from when it was one of Leah's own addons.
 
-**Status: stage 1a built (2026-11-09): the simulated base station.** Was planned, not started. Rewritten 2026-10-13 after the user's decision on #9: **Leah is the command station.** It doesn't drive other makers' command stations (NCE, DCC-EX, Digitrax, Z21); it competes with them, by building DCC in. The first plan (2026-10-06: drivers for DCC-EX, Z21, and LocoNet) is superseded. Each stage is designed with the user before it is built, as the controls are. Tracked on GitHub: [#32](https://github.com/bmasters-dev/leah-language/issues/32), milestone "Model railroading".
+**Status: stage 1a built (2026-11-09): the simulated base station; stage 1b (2026-11-10): Leah's base station board with no track power, checked by a reader board.** Was planned, not started. Rewritten 2026-10-13 after the user's decision on #9: **Leah is the command station.** It doesn't drive other makers' command stations (NCE, DCC-EX, Digitrax, Z21); it competes with them, by building DCC in. The first plan (2026-10-06: drivers for DCC-EX, Z21, and LocoNet) is superseded. Each stage is designed with the user before it is built, as the controls are. Tracked on GitHub: [#32](https://github.com/bmasters-dev/leah-language/issues/32), milestone "Model railroading".
 
 ## Goal
 
@@ -126,16 +126,65 @@ Step 2 of the safe ladder. Decided by Claude (the owner can overrule):
 - **Both boards on USB** to the PC, which powers them; no other supply connected.
 - The owner's account needs the `dialout` group to open the ports (`sudo usermod -aG dialout $USER`, then
   log out and in).
-- **The board programs** are `boards/dcc_base/dcc_base.ino` (the Mega: a line `P 03 3F A9` sets the
-  packet repeated between idle packets, the error byte added; `I` idle only) and
+- **The board programs** are `boards/dcc_base/dcc_base.ino` (the Mega) and
   `boards/dcc_reader/dcc_reader.ino` (the Uno: `P ...` for each packet heard, at most every 2 s, and a
   `T` line each second with the halves' shortest and longest, the packets, the halves outside S-9.1's
-  limits, and the error-byte failures).
+  limits, and the error-byte failures; starts with `LEAH DCC READER 1`).
+- **The base station's program, version 2** (2026-11-10, `LEAH DCC BASE 2`): a **refresh table** of 32
+  places (`K <place> <packet>` keeps a packet repeating, `D <place>` drops it), packets to **send now**
+  (`S <packet>`, each three times, ahead of the table), track **power** (`+`, `-`: off holds pin 12 low),
+  `X` (everything dropped, power off), `?` (`STATE power on places 2`), and `.` (only that the PC is
+  there). Packets come with their error byte, which the board checks. An idle packet goes between every
+  two others, so no decoder gets two in a row (S-9.2's 5 ms between packets to one address). It answers
+  `OK` or `ERR ...` to every line but `.`. The timer's interrupt works each bit out from the packet's
+  bytes, so the table holds bytes, not bits.
+- **Safety (decided 2026-11-10):** with the power on, **3 seconds without a line from the PC turn the
+  power off**, and the board says `OFF no word from the PC for 3 seconds`. Leah's link says `.` every
+  second, from a thread of its own, so a script busy for a while is fine, but a program that ended,
+  crashed, or lost its cable leaves no signal on the track. Leah turns `power` false and warns when it
+  hears the `OFF`. **A known limit** (the code review, 2026-11-10): the `.` comes from the link's own
+  thread, so a script stuck in a loop of its own (or a frozen window) keeps the power on; ending the
+  program, or closing it from the desktop, cuts it within 3 seconds. Tying the `.` to the script's
+  progress would turn the power off under a script that is merely waiting (a `sleep()` while a train
+  runs), so it is left so, as every command station program leaves it. After a cable is pulled,
+  turning the power off and the emergency stop still work (they stop the locomotives' objects and send
+  nothing); a lost reader stops only the reading back, with a warning, never the base station. Two
+  locomotive objects at one address share its places in the table, so the board never sends two
+  speeds for one decoder in turn. `load_dcc_program()` refuses a board its program doesn't run on (the
+  base station: the Mega 2560, OC1B being pin 12 there only; the reader: the ATmega328P boards, ICP1
+  being pin 8). A simulated base station needs nothing from a script runner's rules (the addon gives
+  its needs by its options); one on a port needs "device".
+- **What the script sees (decided 2026-11-10):** `dcc_base($port, reader: $port)`; `simulate` false;
+  new read-only `port`, `reader`, and `timing` (the reader's last `T` line: `one` and `zero` as
+  `[shortest, longest]` in µs or null, `packets`, `outside`, `errors`; null without a reader); `close()`.
+  `packets`' `heard` on a board is the reader having heard it go out; `decoder()` on a board is the
+  reader's packets fed to the same decoder logic as the simulation (null with no reader). Each
+  locomotive takes two places in the table (its speed, and F0 to F4): 16 locomotives, then its packets
+  are sent once with a warning; letting go of a locomotive drops its places. The base's
+  `emergency_stop()` on a board also turns each locomotive's kept speed into its emergency stop, or the
+  table would start it again. `dcc_ports()` lists the USB serial ports (`port`, `name` from the USB ids,
+  `vendor_id`, `product_id`, `allowed` by `access(2)`); `load_dcc_program($port, "base" or "reader",
+  board:, arduino_cli:)` compiles and uploads through arduino-cli in a thread, giving back a
+  `dcc_program_job` (`port`, `role`, `board`, `finished`, `succeeded`, `message`; `wait()`;
+  `on_finished($succeeded, $message)`), its sketch, build, and arduino-cli's build cache
+  (`ARDUINO_BUILD_CACHE_PATH`, unless set) in a `make_temp_path()` folder. A missing arduino-cli is a
+  `shell_error`. `dcc_base` and `dcc_ports` need "device", `load_dcc_program` "programs" and "device".
+- **Connecting:** opening a port starts an Arduino's program again (sometimes twice: lines sent in
+  between are lost), so `dcc_base()` waits for the base station's hello, asks `?`, and goes on only
+  once a `STATE` came after the last hello (and the reader's hello or a `T` line), within 5 s; then `X`.
+  A board that doesn't start again on opening answers the `?` asked after 2.5 s. A silent board, or one
+  with an older program, is a `hardware_error` naming the `load_dcc_program()` call to make.
+- **Tests without hardware:** `tests/fake_boards.py` plays both boards on pseudo-terminals (the
+  protocol, the safety, the reader's lines; `--base silent|old`, `--cut-after`); `LEAH_TEST_DCC_PORTS`
+  names a file listing stand-in ports for `dcc_ports()`, and every test sets it, so no test ever sees
+  the real boards. `LEAH_DCC_TRACE` prints every line to and from the boards, for working on them.
 - **Measured on the owner's bench, 2026-11-10** (a genuine Mega 2560, a CH340 Uno clone): halves of a 1
   57.5 to 58.0 us, of a 0 99.5 to 100.0 us (S-9.1 allows a command station 55 to 61 and at least 95);
   about 172 packets a second; no error-byte failures; short (3) and long (231) addresses, speed and stop
-  packets read back exactly. The signal half of step 2 passes; Leah's side (`dcc_base()` with a port)
-  is next.
+  packets read back exactly. The signal half of step 2 passes. Leah's side the same evening: from a
+  Leah script and from `examples/dcc_bench.leah`, the throttle drove the real Mega, and the reader's
+  decoder 3 followed it (speed, direction, headlight, the emergency stop), the timing unchanged, every
+  packet heard. **Step 2 passes.**
 - **`arduino-cli` is a prerequisite** (installed 2026-11-10 for development in `~/Leah_Tools`, version
   1.5.1, with the `arduino:avr` core; a wrapper sets its folders so nothing goes into `~/.arduino15`).
   It isn't a Debian package, so it can't go in addon.toml's `needs` (Debian packages only): the

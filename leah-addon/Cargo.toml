@@ -17,3 +17,5 @@ crate-type = ["cdylib"]
 # The addon kit, from Leah's source beside this repository (~/Leah_Dev/kit) until the kit is
 # published (bmasters-dev/leah-language#720).
 leah-addon-kit = { path = "../../Leah_Dev/kit" }
+# The boards' serial ports (termios, poll, access).
+libc = "0.2"

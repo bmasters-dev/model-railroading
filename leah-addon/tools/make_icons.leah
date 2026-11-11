@@ -1,0 +1,89 @@
+` Draws the addon's icons into model_railroading.icons (beside addon.toml): a 16 × 16 and a 32 × 32
+` icon for each kind it adds, which the Leah IDE shows in its library and tray. A pack is a zip file:
+` `<kind>-16.png` and `<kind>-32.png` for each kind, and `index.json` naming them, as Leah's own addons'
+` packs are (design/icons.md). Run it with a Leah that has windows' drawing and archives (the graphics
+` and compression addons), after adding or changing an icon:
+`
+`     leah tools/make_icons.leah [a preview sheet to write, a .png]
+
+include "icon_helpers.leah"
+
+$icons = []
+` A base station: a box, its DCC square wave on its face, and two rails below.
+$icons["dcc_base"] = function() {
+    ic.rbox(0.5, 1.5, 15, 9, ic.face, ic.edge)
+    ic.stroke([[2.5, 7.5], [4.5, 7.5], [4.5, 4], [6.5, 4], [6.5, 7.5], [9.5, 7.5], [9.5, 4], [11.5, 4], [11.5, 7.5], [13.5, 7.5]], ic.accent, 1.2)
+    ic.fill(0, 12.5, 16, 1, ic.edge)
+    ic.fill(0, 14.5, 16, 1, ic.edge)
+}
+` A locomotive: its boiler, cab, and wheels, on a rail.
+$icons["locomotive"] = function() {
+    ic.rfill(1, 6, 9, 5, ic.accent, 1)
+    ic.rfill(9, 3, 6, 8, ic.accent_dark, 1)
+    ic.fill(10.5, 4.5, 3, 2.5, ic.accent_light)
+    ic.fill(3, 3.5, 2, 2.5, ic.ink)
+    ic.circle(2, 10, 4, 4, ic.ink)
+    ic.circle(6.5, 10, 4, 4, ic.ink)
+    ic.circle(11, 10, 4, 4, ic.ink)
+    ic.fill(0, 14.5, 16, 1, ic.edge)
+}
+` A program being loaded onto a board: a chip with its pins, and an arrow coming down into it.
+$icons["dcc_program_job"] = function() {
+    foreach [4.5, 7.5, 10.5] as $x {
+        ic.fill($x, 6.5, 1, 1.5, ic.edge)
+        ic.fill($x, 14.5, 1, 1.5, ic.edge)
+    }
+    ic.rbox(2.5, 8, 11, 6.5, ic.face, ic.edge, 1)
+    ic.fill(7, 0, 2, 4, ic.green)
+    ic.shape([[4, 3.5], [12, 3.5], [8, 7.5]], ic.green)
+}
+
+$sizes = [16, 32]
+` (One date for every entry, so the pack only changes when an icon does.)
+$stamp = make_date(2026, 10, 26)
+$path = join_path(file_path(script_path()), "..", "model_railroading.icons")
+$index = ["format": 1, "name": "the model_railroading addon", "sizes": $sizes, "icons": []]
+$pack = new_archive(kind: "zip")
+$made = []
+foreach $icons as $kind: $draw {
+    $index["icons"][$kind] = []
+    foreach $sizes as $size {
+        $p = ic.begin($size)
+        $draw()
+        $name = $kind + "-" + $size + ".png"
+        $pack.add_data(picture_to_bytes($p), $name, modified: $stamp)
+        $index["icons"][$kind][to_text($size)] = $name
+        $made[] = [$kind, $size, $p]
+    }
+}
+$pack.add_data(json_encode($index, pretty: true) + "\n", "index.json", modified: $stamp)
+write_bytes_file($path, $pack.finish())
+print("make_icons: " + count($icons) + " icons in " + tidy_path($path) + " (" + format_file_size(file_size($path)) + ")")
+
+` A preview sheet, for looking at them: each icon at 32 × 32, at 16 × 16, and at 16 × 16 made four
+` times bigger, on a light and a dark ground.
+$args = command_line_arguments()
+if count($args) > 0 {
+    $sheet = picture(width: 250, height: count($icons) * 152, background: "#FFFFFF")
+    $sg = $sheet.graphics
+    $sg.picture_smoothing = "none"
+    $sg.font_size = 11
+    $i = 0
+    foreach $icons as $kind: $draw {
+        foreach [["#F4F5F7", "#20242B", 0], ["#2A2C31", "#E8EAEE", 1]] as [$ground, $text, $dark] {
+            $y = ($i * 2 + $dark) * 76
+            $sg.drawing_color = $ground
+            $sg.fill_rectangle(0, $y, 250, 76)
+            $big = first_match($made, fn($m) => $m[0] == $kind and $m[1] == 32)[2]
+            $small = first_match($made, fn($m) => $m[0] == $kind and $m[1] == 16)[2]
+            $sg.draw_picture($big, 6, $y + 6)
+            $sg.draw_picture($small, 46, $y + 14)
+            $sg.draw_picture($small, 70, $y + 6, 64, 64)
+            $sg.drawing_color = $text
+            $sg.draw_text($kind, 140, $y + 40)
+        }
+        $i++
+    }
+    save_picture($sheet, $args[0], overwrite: true)
+    print("make_icons: the preview, " + $args[0])
+}

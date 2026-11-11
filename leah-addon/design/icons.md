@@ -1,10 +1,13 @@
 # The addon's icons
 
-`model_railroading.icons` (beside `addon.toml`) holds the icons the Leah IDE shows for `dcc_base` and
-`locomotive` in its library and tray, at 16 and 32 pixels: a zip with `<kind>-16.png`,
-`<kind>-32.png`, and `index.json`, as Leah's addon packs are. They were drawn by the IDE's
-`tools/make_icons.leah` (bmasters-dev/leah-ide) while the addon was one of Leah's own; these are
-their drawings, in that tool's helpers (`ic.rbox`, `ic.stroke`, ...), to draw them again with it:
+`model_railroading.icons` (beside `addon.toml`) holds the icons the Leah IDE shows for `dcc_base`,
+`locomotive`, and `dcc_program_job` in its library and tray, at 16 and 32 pixels: a zip with `<kind>-16.png`,
+`<kind>-32.png`, and `index.json`, as Leah's addon packs are. The first two were drawn by the IDE's
+`tools/make_icons.leah` (bmasters-dev/leah-ide) while the addon was one of Leah's own. Since 2026-11-10
+the addon draws its own with `tools/make_icons.leah` (a Leah with the graphics and compression
+addons: `leah tools/make_icons.leah [preview.png]`), on a copy of the IDE tool's helpers
+(`tools/icon_helpers.leah`), so they come out the same; the drawings live there. As they were in the
+IDE's tool:
 
 ```
 ` -- model railroading --

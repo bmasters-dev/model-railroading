@@ -30,9 +30,9 @@ locomotive 3: stop, forward
 |---|---|
 | address | Required. The decoder's address: 1 to 127 for a short address; 128 to 10239 with `long: true` for a long one. 0 or anything past 10239 is a `range_error`, and so is a long address without `long: true`: `locomotive(): 200 is a long address: give long: true (a short address is 1 to 127)`. |
 | long | Optional. `true` sends the address in its long, two-byte form, for 1 to 127 too: a decoder answers to one or the other, so `locomotive(3)` and `locomotive(3, long: true)` are two different locomotives. |
-| base | Optional. The [dcc_base](ref:dcc_base) it runs on; by default the one made last. With none made, it is a `hardware_error`: `locomotive(): there is no base station: make one first, dcc_base(simulate: true)`. |
+| base | Optional. The [dcc_base](ref:dcc_base) it runs on; by default the one made last. With none made, it is a `hardware_error`: `locomotive(): there is no base station: make one first, dcc_base("/dev/ttyACM0") or dcc_base(simulate: true)`. |
 
-It starts stopped, going forward, with every function off; nothing is sent until something changes.
+It starts stopped, going forward, with every function off; nothing is sent until something changes. On a base station board, its speed and its lights (F0 to F4) are kept in the board's refresh table and sent again and again while the script holds the locomotive; once the script lets go of it, the board stops sending them. The table holds 16 locomotives: past that, a locomotive's packets are sent once each time they change, with a warning.
 
 ## Properties
 

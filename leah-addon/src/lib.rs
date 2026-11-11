@@ -1,28 +1,65 @@
-//! The model railroading addon (design/model_railroading.md): Leah as the command station. Its first
-//! stage is a simulated DCC base station (`dcc_base(simulate: true)`) and the locomotives it drives
-//! (`locomotive()`), the packets made as the NMRA's standards give them and read back from their
-//! signal by simulated decoders.
+//! The model railroading addon (design/model_railroading.md): Leah as the command station. A DCC base
+//! station (`dcc_base()`), simulated or Leah's own board on a USB port with a reader board reading its
+//! signal back, and the locomotives it drives (`locomotive()`), the packets made as the NMRA's
+//! standards give them; the boards' ports (`dcc_ports()`) and loading their programs
+//! (`load_dcc_program()`).
 //!
 //! A 3rd-party addon, built with Leah's addon kit: Leah loads it from a 3rd-party addons folder, where
 //! `leah --install-addon https://github.com/bmasters-dev/model-railroading` puts it.
 
 mod base;
+mod board;
 mod dcc;
 
-use leah_addon_kit::leah_addon;
+use leah_addon_kit::{Function, Needs, Value};
 
-leah_addon! {
-    name: "model_railroading",
-    version: env!("CARGO_PKG_VERSION"),
-    summary: "Model railroading: a DCC base station (simulated for now) and the locomotives it drives",
-    // (Each function, what it needs from a script runner's rules (none: nothing leaves the program
-    // while the base station is simulated), and the Rust function running it.)
-    functions: [
-        ("dcc_base", [], base::new_base),
-        ("locomotive", [], base::new_locomotive),
-    ],
-    objects: [
-        ("dcc_base", ["simulate", "power", "packets"], ["emergency_stop", "decoder", "clear_packets"]),
-        ("locomotive", ["address", "long", "base", "speed", "direction"], ["set_function", "function", "stop", "emergency_stop"]),
-    ],
+/// What each function needs from a script runner's rules: a simulated base station nothing (nothing
+/// leaves the program), one on a board's port "device"; the ports list "device"; loading a program
+/// "programs" (arduino-cli) and "device".
+fn needs(name: &str, options: &[(String, Value, i64)]) -> Vec<Needs> {
+    match name {
+        "dcc_base" if options.iter().any(|(n, v, _)| n == "simulate" && *v == Value::Bool(true)) => vec![],
+        "dcc_base" | "dcc_ports" => vec![Needs::Device],
+        "load_dcc_program" => vec![Needs::Programs, Needs::Device],
+        _ => vec![],
+    }
+}
+
+// (As the kit's `leah_addon!` makes it, with the needs given by the options above.)
+/// The addon's entry point (Leah's addon interface).
+#[unsafe(no_mangle)]
+pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::AddonTable {
+    leah_addon_kit::raw::entry(level, || leah_addon_kit::Definition {
+        name: "model_railroading",
+        version: env!("CARGO_PKG_VERSION"),
+        summary: "Model railroading: a DCC base station (simulated, or Leah's own board on USB) and the locomotives it drives",
+        requires: &[],
+        functions: vec![
+            ("dcc_base", &[Needs::Device], base::new_base as Function),
+            ("locomotive", &[], base::new_locomotive as Function),
+            ("dcc_ports", &[Needs::Device], base::dcc_ports as Function),
+            ("load_dcc_program", &[Needs::Programs, Needs::Device], base::load_dcc_program as Function),
+        ],
+        needs: Some(needs),
+        objects: vec![
+            ("dcc_base", &["simulate", "port", "reader", "power", "packets", "timing"], &["emergency_stop", "decoder", "clear_packets", "close"], &[]),
+            ("locomotive", &["address", "long", "base", "speed", "direction"], &["set_function", "function", "stop", "emergency_stop"], &[]),
+            ("dcc_program_job", &["port", "role", "board", "finished", "succeeded", "message"], &["wait"], &["on_finished"]),
+        ],
+        controls: vec![],
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_simulated_base_station_needs_nothing_and_a_board_needs_the_device() {
+        let simulate = vec![("simulate".to_string(), Value::Bool(true), 1)];
+        assert!(needs("dcc_base", &simulate).is_empty());
+        assert_eq!(needs("dcc_base", &[]), vec![Needs::Device]);
+        assert_eq!(needs("load_dcc_program", &[]), vec![Needs::Programs, Needs::Device]);
+        assert!(needs("locomotive", &[]).is_empty());
+    }
 }

@@ -45,16 +45,26 @@ struct Run {
 
 /// Runs a script with this addon, gives back what it printed.
 fn run(test: &str, script: &str) -> Run {
+    run_with(test, script, &[])
+}
+
+/// As `run`, with more of the environment set.
+fn run_with(test: &str, script: &str, env: &[(&str, &str)]) -> Run {
     let dir = addons_folder(test);
     let file = dir.join("script.leah");
     std::fs::write(&file, script).unwrap();
-    let out = Command::new(leah())
+    let mut command = Command::new(leah());
+    command
         .arg(&file)
         .env("LEAH_3RD_PARTY_ADDONS", &dir)
         // (None of the person's own addons: only this one, and Leah's own built in.)
         .env("LEAH_USER_ADDONS", "")
-        .output()
-        .expect("Leah runs");
+        // (Never the real boards' list.)
+        .env("LEAH_TEST_DCC_PORTS", "/nonexistent");
+    for (k, v) in env {
+        command.env(k, v);
+    }
+    let out = command.output().expect("Leah runs");
     let _ = std::fs::remove_dir_all(&dir);
     Run { stdout: String::from_utf8_lossy(&out.stdout).into(), stderr: String::from_utf8_lossy(&out.stderr).into(), success: out.status.success() }
 }
@@ -115,7 +125,7 @@ print(count($base.packets))
 
 #[test]
 fn a_base_station_and_a_locomotive_refuse_what_they_cant_do() {
-    let script = r#"foreach [function() { return locomotive(3) }, function() { return dcc_base() }, function() { return dcc_base("/dev/ttyACM0") }] as $f {
+    let script = r#"foreach [function() { return locomotive(3) }, function() { return dcc_base() }, function() { return dcc_base("/dev/leah-no-such-port") }, function() { return dcc_base("ttyACM0") }, function() { return dcc_base(simulate: true, reader: "/dev/x") }, function() { return dcc_base("/etc/hostname") }] as $f {
     try {
         $f()
     } catch $e {
@@ -137,9 +147,12 @@ foreach [function() { return locomotive(0) }, function() { return locomotive(200
     assert_eq!(
         run.stdout,
         concat!(
-            "hardware_error: locomotive(): there is no base station: make one first, dcc_base(simulate: true)\n",
-            "hardware_error: dcc_base(): give the board's port, or simulate: true for a simulated base station (the board isn't supported yet)\n",
-            "hardware_error: dcc_base(): Leah's base station board isn't supported yet (\"/dev/ttyACM0\"): dcc_base(simulate: true) runs a simulated one\n",
+            "hardware_error: locomotive(): there is no base station: make one first, dcc_base(\"/dev/ttyACM0\") or dcc_base(simulate: true)\n",
+            "hardware_error: dcc_base(): give the base station board's port, like dcc_base(\"/dev/ttyACM0\") (dcc_ports() lists them), or simulate: true for a simulated base station\n",
+            "hardware_error: dcc_base(): there is no board on /dev/leah-no-such-port: is it plugged in? (dcc_ports() lists the ports there are)\n",
+            "hardware_error: dcc_base(): \"ttyACM0\" isn't a port: give its whole path, like \"/dev/ttyACM0\" (dcc_ports() lists them)\n",
+            "type_error: dcc_base(simulate: true) takes no port and no reader: the simulated base station has no boards\n",
+            "hardware_error: dcc_base(): you may not open /etc/hostname yet: on Linux, apps may use a board's USB port only once your account is in the `dialout` group (`sudo usermod -aG dialout $USER`, then log out and back in once)\n",
             "range_error: locomotive(): a locomotive's address is 1 to 10239, not 0\n",
             "range_error: locomotive(): 200 is a long address: give long: true (a short address is 1 to 127)\n",
             "range_error: locomotive(): a locomotive's address is 1 to 10239, not 10240\n",
@@ -232,4 +245,319 @@ fn the_examples_page_gives_its_documented_output() {
         checked += 1;
     }
     assert!(checked > 0, "no examples found");
+}
+
+/// The stand-in boards (tests/fake_boards.py): their ports, and the program playing them, which ends
+/// when this is dropped.
+struct FakeBoards {
+    base: String,
+    reader: String,
+    _child: std::process::Child,
+}
+
+fn fake_boards(args: &[&str]) -> Option<FakeBoards> {
+    use std::io::BufRead;
+    let mut child = Command::new("python3")
+        .arg("-I")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake_boards.py"))
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    let mut out = std::io::BufReader::new(child.stdout.take()?);
+    let mut line = String::new();
+    out.read_line(&mut line).ok()?;
+    let base = line.trim().strip_prefix("BASE ")?.to_string();
+    line.clear();
+    out.read_line(&mut line).ok()?;
+    let reader = line.trim().strip_prefix("READER ")?.to_string();
+    Some(FakeBoards { base, reader, _child: child })
+}
+
+#[test]
+fn a_base_station_board_sends_what_the_reader_hears() {
+    // Leah's base station on its (stand-in) board: the locomotive's speed and lights kept in the
+    // refresh table, the emergency stop sent now, the reader's packets and timing read back, and the
+    // track power kept on by the PC's word every second (the board turns it off after 3 seconds of
+    // quiet).
+    let log = std::env::temp_dir().join(format!("model-railroading-board-log-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let Some(boards) = fake_boards(&["--log", log.to_str().unwrap()]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{base}", reader: "{reader}")
+print([$base.simulate, $base.port == "{base}", $base.reader == "{reader}", $base.power, $base.timing == null or $base.timing["one"] == null])
+$loco = locomotive(3)
+$loco.speed = 40
+$loco.set_function(0, true)
+$base.power = true
+sleep(1600)
+$d = $base.decoder(3)
+print([$d["speed"], $d["direction"], $d["functions"][0]])
+print([$base.timing["one"], $base.timing["zero"], $base.timing["errors"]])
+print(map($base.packets, function($p) {{ return $p["heard"] }}))
+$base.emergency_stop()
+sleep(800)
+print($base.decoder(3)["speed"])
+sleep(3000)
+print($base.power)
+$base.close()
+print($base.power)
+try {{
+    $base.power = true
+}} catch $e {{
+    print($e.message)
+}}
+"#,
+        base = boards.base,
+        reader = boards.reader
+    );
+    let run = run("board", &script);
+    drop(boards);
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    assert!(run.success, "{}\n{}", run.stdout, run.stderr);
+    assert_eq!(
+        run.stdout,
+        "[false, true, true, false, true]\n[40, \"forward\", true]\n[[57.5, 58], [99.5, 100], 0]\n[true, true]\n0\ntrue\nfalse\na dcc_base's `power`: the base station is closed\n"
+    );
+    let lines: Vec<&str> = said.lines().filter(|l| *l != ".").collect();
+    assert_eq!(lines, ["?", "X", "K 0 03 3F A9 95", "K 1 03 90 93", "+", "S 00 41 41", "K 0 03 3F 81 BD", "X"], "{said}");
+    assert!(said.lines().filter(|l| *l == ".").count() >= 4, "the PC said it was there every second:\n{said}");
+}
+
+#[test]
+fn a_base_station_that_turns_its_power_off_says_so() {
+    let Some(boards) = fake_boards(&["--cut-after", "0.5"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!("$base = dcc_base(\"{}\")\n$base.power = true\nsleep(1200)\nprint($base.power)\n", boards.base);
+    let run = run("cut", &script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(run.stdout, "false\n");
+    assert!(run.stderr.contains("the base station turned the track power off by itself: no word from the PC for 3 seconds"), "{}", run.stderr);
+}
+
+#[test]
+fn a_board_without_leahs_program_is_named_with_what_to_do() {
+    for (mode, words) in [
+        ("silent", "isn't running Leah's base station program: load it with load_dcc_program(\"{port}\", \"base\")"),
+        ("old", "runs an older program of Leah's (LEAH DCC BASE 1): load the new one with load_dcc_program(\"{port}\", \"base\")"),
+        ("reader", "runs Leah's reader program, not the base station's: are the base station's and the reader's ports the wrong way round?"),
+    ] {
+        let Some(boards) = fake_boards(&["--base", mode]) else {
+            eprintln!("skipped: no python3 for the stand-in boards");
+            return;
+        };
+        let script = format!("try {{\n    $base = dcc_base(\"{}\")\n}} catch $e {{\n    print($e.type + \": \" + $e.message)\n}}\n", boards.base);
+        let run = run(&format!("program-{mode}"), &script);
+        assert!(run.success, "{}", run.stderr);
+        let wanted = format!("hardware_error: dcc_base(): the board on {} {}\n", boards.base, words.replace("{port}", &boards.base));
+        assert_eq!(run.stdout, wanted);
+    }
+}
+
+#[test]
+fn dcc_ports_names_the_boards_and_whether_they_may_be_opened() {
+    let dir = std::env::temp_dir().join(format!("model-railroading-ports-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let open = dir.join("ttyACM0");
+    let shut = dir.join("ttyUSB0");
+    std::fs::write(&open, "").unwrap();
+    std::fs::write(&shut, "").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let list = dir.join("ports.txt");
+    std::fs::write(&list, format!("{}\t2341\t0042\t\n{}\t1a86\t7523\tUSB Serial\n", open.display(), shut.display())).unwrap();
+    let run = run_with("ports", "foreach dcc_ports() as $p {\n    print([$p[\"name\"], $p[\"vendor_id\"], $p[\"product_id\"], $p[\"allowed\"]])\n}\n", &[("LEAH_TEST_DCC_PORTS", list.to_str().unwrap())]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        "[\"Arduino Mega 2560\", \"2341\", \"0042\", true]\n[\"USB serial (CH340): an Uno, Nano, or Mega clone\", \"1a86\", \"7523\", false]\n"
+    );
+}
+
+#[test]
+fn load_dcc_program_compiles_and_uploads_through_arduino_cli() {
+    // A stand-in arduino-cli writes down what it was asked, checks the program is in its sketch
+    // folder, and answers as the real one does (or fails as an upload to the wrong board does).
+    let dir = std::env::temp_dir().join(format!("model-railroading-cli-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let asked = dir.join("asked.txt");
+    let cli = dir.join("arduino-cli");
+    std::fs::write(
+        &cli,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{asked}'\nfor last; do :; done\n[ -f \"$last/$(basename \"$last\").ino\" ] && echo 'the sketch is there' >> '{asked}'\n\
+             case \"$*\" in *--port*/dev/broken*) echo 'avrdude: stk500_recv(): programmer is not responding' >&2; exit 1;; esac\n\
+             echo 'Sketch uses 4376 bytes (1%) of program storage space. Maximum is 253952 bytes.'\n",
+            asked = asked.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = format!(
+        r#"$job = load_dcc_program("/dev/fake0", "base", arduino_cli: "{cli}")
+$job.on_finished = function($ok, $message) {{
+    print("finished: " + $ok)
+}}
+print([$job.port, $job.role, $job.board])
+print($job.wait())
+print($job.message)
+$other = load_dcc_program("/dev/broken", "reader", board: "arduino:avr:nano", arduino_cli: "{cli}")
+print($other.wait())
+print($other.message)
+foreach [function() {{ return load_dcc_program("ttyACM0", "base") }}, function() {{ return load_dcc_program("/dev/x", "booster") }}, function() {{ return load_dcc_program("/dev/x", "base", board: "-p") }}, function() {{ return load_dcc_program("/dev/x", "base", board: "arduino:avr:uno") }}, function() {{ return load_dcc_program("/dev/x", "reader", board: "arduino:avr:mega") }}, function() {{ return load_dcc_program("/dev/x", "base", arduino_cli: "/nowhere/arduino-cli") }}] as $f {{
+    try {{
+        $f()
+    }} catch $e {{
+        print($e.type + ": " + $e.message)
+    }}
+}}
+"#,
+        cli = cli.display()
+    );
+    let run = run("load", &script);
+    let said = std::fs::read_to_string(&asked).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        concat!(
+            "[\"/dev/fake0\", \"base\", \"arduino:avr:mega\"]\n",
+            "true\n",
+            "Leah's base station program is on the board on /dev/fake0 (4376 of the board's 253952 bytes)\n",
+            "false\n",
+            "the board on /dev/broken didn't answer the uploader: is it the board you named (arduino:avr:nano)? A Nano with the old bootloader is \"arduino:avr:nano:cpu=atmega328old\"\n",
+            "type_error: load_dcc_program(): \"ttyACM0\" isn't a port: give its whole path, like \"/dev/ttyACM0\" (dcc_ports() lists them)\n",
+            "type_error: load_dcc_program()'s program is \"base\" (the base station) or \"reader\" (the board reading the signal back), not \"booster\"\n",
+            "type_error: load_dcc_program()'s `board:` is arduino-cli's name for the board, like \"arduino:avr:mega\", \"arduino:avr:uno\", or \"arduino:avr:nano\", not \"-p\"\n",
+            "type_error: load_dcc_program(): Leah's base station program runs on an Arduino Mega 2560 (\"arduino:avr:mega\"), not \"arduino:avr:uno\"\n",
+            "type_error: load_dcc_program(): Leah's reader program runs on an Arduino Uno, Nano, or Pro Mini (\"arduino:avr:uno\", \"arduino:avr:nano\", \"arduino:avr:pro\"), not \"arduino:avr:mega\"\n",
+            "shell_error: load_dcc_program(): there is no arduino-cli at /nowhere/arduino-cli\n",
+            "finished: true\n",
+        )
+    );
+    let calls: Vec<&str> = said.lines().collect();
+    // (Each call, then the stand-in's note that the program was in the sketch folder it was given.)
+    assert_eq!(calls.len(), 8, "{said}");
+    assert!(calls[0].starts_with("compile --fqbn arduino:avr:mega --build-path /") && calls[0].ends_with("/leah_dcc_base"), "{said}");
+    assert!(calls[2].starts_with("upload --fqbn arduino:avr:mega --input-dir /") && calls[2].contains(" --port /dev/fake0 /"), "{said}");
+    assert!(calls[4].starts_with("compile --fqbn arduino:avr:nano") && calls[4].ends_with("/leah_dcc_reader"), "{said}");
+    assert!(calls[6].starts_with("upload --fqbn arduino:avr:nano") && calls[6].contains(" --port /dev/broken /"), "{said}");
+    assert!([1, 3, 5, 7].iter().all(|i| calls[*i] == "the sketch is there"), "{said}");
+}
+
+#[test]
+fn the_dcc_bench_example_drives_the_boards_and_asks_for_permission() {
+    // The bench example on Leah's hidden test screen, with the stand-in boards listed as the ports:
+    // connected, the track power on, the throttle open, it shows what the reader heard; and with a
+    // port this account may not open, it asks for permission instead.
+    let gui = std::env::var_os("LEAH_GUI").map(PathBuf::from).unwrap_or_else(|| home().join("Leah_Dev/target/all_addons/debug/leah"));
+    let screen = home().join("Leah_Dev/tools/wayland_test_screen.sh");
+    if !gui.is_file() || !screen.is_file() {
+        eprintln!("skipped: no Leah with windows ({}) or no hidden test screen", gui.display());
+        return;
+    }
+    let Some(boards) = fake_boards(&[]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let dir = addons_folder("bench");
+    let shut = dir.join("ttyUSB9");
+    std::fs::write(&shut, "").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/dcc_bench.leah");
+    let on_screen = |ports: String, then: &str| -> String {
+        let list = dir.join("ports.txt");
+        std::fs::write(&list, ports).unwrap();
+        let file = dir.join("script.leah");
+        std::fs::write(&file, format!("include \"{}\"\n{then}", example.display())).unwrap();
+        let out = Command::new("sh")
+            .arg(&screen)
+            .arg("--gui")
+            .arg(&gui)
+            .arg(&file)
+            .env("LEAH_3RD_PARTY_ADDONS", &dir)
+            .env("LEAH_USER_ADDONS", "")
+            .env("LEAH_TEST_DCC_PORTS", &list)
+            .env("LEAH_TEST_INTERACT", "")
+            .env("LEAH_QUIT_AFTER_MS", "12000")
+            .output()
+            .expect("the hidden screen runs");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    let driving = on_screen(
+        format!("{}\t2341\t0042\t\n{}\t1a86\t7523\tUSB Serial\n", boards.base, boards.reader),
+        "call_later(300, function() {\n    global $connect\n    $connect.click()\n    call_later(3500, function() {\n        global $power, $throttle, $headlight\n        $power.value = true\n        $throttle.value = 64\n        $headlight.value = true\n        call_later(1800, function() {\n            global $decoder_text, $verdict\n            print($decoder_text.text)\n            print($verdict.text)\n            quit()\n        })\n    })\n})\n",
+    );
+    let asking = on_screen(
+        format!("{}\t1a86\t7523\tUSB Serial\n", shut.display()),
+        "call_later(300, function() {\n    global $status, $give_access\n    print($give_access.visible)\n    print($status.text)\n    quit()\n})\n",
+    );
+    drop(boards);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(driving.contains("Decoder 3 heard: speed 64, forward, headlight on.\nWithin the NMRA's limits for a command station"), "{driving}");
+    assert!(asking.contains("true\nLinux needs your permission before apps can talk to a board over USB."), "{asking}");
+}
+
+#[test]
+fn a_pulled_cable_stops_what_it_must_and_nothing_more() {
+    // The reader's cable out: the base station goes on (its power kept on by the PC's word), only the
+    // reading back stops, with a warning. The base station's cable out: it can't be used any more, but
+    // turning its power off and the emergency stop still work (there is nothing to send them to).
+    let Some(boards) = fake_boards(&["--drop-reader-after", "0.5"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        "$base = dcc_base(\"{}\", reader: \"{}\")\n$base.power = true\nsleep(1500)\nprint([$base.power, $base.timing])\n$loco = locomotive(3)\n$loco.speed = 20\nsleep(3500)\nprint($base.power)\n",
+        boards.base, boards.reader
+    );
+    let reader_gone = run("reader-gone", &script);
+    drop(boards);
+    assert!(reader_gone.success, "{}", reader_gone.stderr);
+    assert_eq!(reader_gone.stdout, "[true, null]\ntrue\n");
+    assert!(reader_gone.stderr.contains("went away (was its cable pulled?): decoder() and timing stop"), "{}", reader_gone.stderr);
+
+    let Some(boards) = fake_boards(&["--drop-base-after", "2.2"]) else { return };
+    let script = format!(
+        "$base = dcc_base(\"{}\")\n$loco = locomotive(3)\n$loco.speed = 50\n$base.power = true\nsleep(2500)\n$base.power = false\n$base.emergency_stop()\nprint([$base.power, $loco.speed])\ntry {{\n    $base.power = true\n}} catch $e {{\n    print($e.message)\n}}\n",
+        boards.base
+    );
+    let gone = run("base-gone", &script);
+    let base = boards.base.clone();
+    drop(boards);
+    assert!(gone.success, "{}", gone.stderr);
+    assert_eq!(gone.stdout, format!("[false, 0]\na dcc_base's `power`: the base station's port {base} went away (was its cable pulled?)\n"));
+}
+
+#[test]
+fn locomotives_at_one_address_share_their_places_in_the_refresh_table() {
+    let log = std::env::temp_dir().join(format!("model-railroading-share-log-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let Some(boards) = fake_boards(&["--log", log.to_str().unwrap()]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        "$base = dcc_base(\"{}\")\n$a = locomotive(3)\n$b = locomotive(3)\n$c = locomotive(4)\n$a.speed = 80\n$b.speed = 0\n$c.speed = 10\n$a = null\n$b = null\nsleep(300)\n",
+        boards.base
+    );
+    let run = run("share", &script);
+    drop(boards);
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    assert!(run.success, "{}", run.stderr);
+    let lines: Vec<&str> = said.lines().filter(|l| *l != "." && *l != "?").collect();
+    // (Locomotive 3's two objects keep their speed in place 0; locomotive 4 has places 2 and 3; once
+    // both of 3's are let go, its places are dropped, and 4's as the script ends.)
+    assert_eq!(lines, ["X", "K 0 03 3F D1 ED", "K 0 03 3F 80 BC", "K 2 04 3F 8B B0", "D 0", "D 1", "D 2", "D 3", "X"], "{said}");
 }
