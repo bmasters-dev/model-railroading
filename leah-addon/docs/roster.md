@@ -41,7 +41,7 @@ Output:
 | Name | Parameters | Returns |
 |---|---|---|
 | [add](#add) | name as text, parts by name | roster_entry |
-| [entries](#entries) | group: text, address: number | array |
+| [entries](#entries) | group: text, address: number, in_consist: boolean | array |
 | [entry](#entry) | name as text | roster_entry |
 | [export_entries](#export_entries) | path as text, names: array | number |
 | [import_entries](#import_entries) | path as text | array |
@@ -100,9 +100,9 @@ Adds an entry and gives it back. `name` names it in the roster (upper and lower 
 
 ### entries
 
-**entries**(group: ..., address: ...) · array
+**entries**(group: ..., address: ..., in_consist: ...) · array
 
-Its entries, as a list of [roster_entry](ref:roster_entry): all of them, those in a group, or those at an address (what [read_address](ref:dcc_base#read_address) found, say).
+Its entries, as a list of [roster_entry](ref:roster_entry): all of them, those in a group, those at an address (what [read_address](ref:dcc_base#read_address) found, say), or with `in_consist: true` those whose kept settings say their decoder is in an advanced [consist](ref:consist) (CV 19 not 0): a decoder left in one doesn't answer to its own address. `in_consist: false` gives the others.
 
 ```leah check
 $r = roster()

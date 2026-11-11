@@ -358,10 +358,99 @@ pub fn obey(state: &mut DecoderState, instruction: &[u8]) -> Option<String> {
             set(state, 21, *b, 8);
             on_words(state, 21, 28)
         }
+        // Consist control (S-9.2.1 2.3.1.4: 0001001D 0AAAAAAA): CV 19 is the consist address, bit 7
+        // when this unit runs reversed in it; 0 takes it out.
+        [g @ (0x12 | 0x13), a, ..] => {
+            let a = a & 0x7F;
+            let reversed = *g == 0x13;
+            state.cvs.insert(19, if a == 0 { 0 } else { a | if reversed { 0x80 } else { 0 } });
+            if a == 0 { "out of its consist".to_string() } else { format!("consist address {a}{}", if reversed { ", reversed" } else { "" }) }
+        }
         _ => return None,
     };
     state.heard += 1;
     Some(words)
+}
+
+/// Consist control (S-9.2.1 2.3.1.4) to a locomotive: into consist `consist` (1 to 127), reversed or
+/// not, or out of its consist (0).
+pub fn consist_control(address: u16, long: bool, consist: u8, reversed: bool) -> Vec<u8> {
+    let mut data = address_bytes(address, long);
+    data.push(if reversed { 0x13 } else { 0x12 });
+    data.push(consist & 0x7F);
+    packet(&data)
+}
+
+/// The consist address a decoder answers to as well (CV 19's bits 0 to 6), and whether it runs
+/// reversed in it (bit 7): None when it isn't in one.
+pub fn consist_of(state: &DecoderState) -> Option<(u8, bool)> {
+    state.cvs.get(&19).filter(|c| *c & 0x7F != 0).map(|c| (c & 0x7F, c & 0x80 != 0))
+}
+
+fn is_speed(instruction: &[u8]) -> bool {
+    matches!(instruction, [0x3F, ..]) || matches!(instruction, [b, ..] if b & 0xC0 == 0x40)
+}
+
+/// A packet for a locomotive's address, as the decoders on the track take it (S-9.2.1 2.3.1.4): the
+/// decoder at that address (one in a consist ignores speed and direction there), and, for a short
+/// address, every decoder whose consist address it is: speed and direction (reversed for a unit
+/// reversed in the consist), and the functions its CV 21 and 22 let answer there. Whether any
+/// decoder understood it.
+pub fn deliver(decoders: &mut std::collections::BTreeMap<(u16, bool), DecoderState>, address: u16, long: bool, instruction: &[u8]) -> bool {
+    let mut any = false;
+    let own = decoders.entry((address, long)).or_default();
+    let consisted = consist_of(own).is_some_and(|(a, _)| long || u16::from(a) != address);
+    if !(consisted && is_speed(instruction)) {
+        any |= obey(own, instruction).is_some();
+    }
+    if !long && address <= 127 {
+        for ((a, l), state) in decoders.iter_mut() {
+            if (*a, *l) == (address, long) {
+                continue;
+            }
+            let Some((c, reversed)) = consist_of(state) else { continue };
+            if u16::from(c) == address {
+                any |= obey_as_consist(state, reversed, instruction);
+            }
+        }
+    }
+    any
+}
+
+/// A packet to a decoder's consist address: speed and direction (flipped for a reversed unit), and
+/// the functions CV 21 (F1 to F8) and CV 22 (bits 0 and 1 the headlight, 2 to 5 F9 to F12) allow.
+fn obey_as_consist(state: &mut DecoderState, reversed: bool, instruction: &[u8]) -> bool {
+    if is_speed(instruction) {
+        let mut flipped = instruction.to_vec();
+        if reversed {
+            match flipped.as_mut_slice() {
+                [0x3F, ds, ..] => *ds ^= 0x80,
+                [b, ..] => *b ^= 0x20,
+                [] => {}
+            }
+        }
+        return obey(state, &flipped).is_some();
+    }
+    let is_function = matches!(instruction, [b, ..] if b & 0xE0 == 0x80 || b & 0xE0 == 0xA0);
+    if !is_function {
+        return false;
+    }
+    let cv21 = state.cvs.get(&21).copied().unwrap_or(0);
+    let cv22 = state.cvs.get(&22).copied().unwrap_or(0);
+    let allowed = |n: usize| match n {
+        0 => cv22 & 0x03 != 0,
+        1..=8 => cv21 >> (n - 1) & 1 == 1,
+        9..=12 => cv22 >> (n - 7) & 1 == 1,
+        _ => false,
+    };
+    let before = state.functions;
+    let understood = obey(state, instruction).is_some();
+    for (n, was) in before.iter().enumerate() {
+        if !allowed(n) {
+            state.functions[n] = *was;
+        }
+    }
+    understood
 }
 
 /// "functions F0 to F4: F0 on, the rest off".
@@ -374,6 +463,29 @@ fn on_words(state: &DecoderState, first: usize, last: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_consist_takes_speed_at_its_address_and_only_the_functions_it_lets_through() {
+        let mut d: std::collections::BTreeMap<(u16, bool), DecoderState> = Default::default();
+        // Two units: 3 normal, 5 reversed, in consist 74; unit 5 lets F0 and F2 through (CV 22, 21).
+        deliver(&mut d, 3, false, &[0x12, 74]);
+        deliver(&mut d, 5, false, &[0x13, 74]);
+        d.get_mut(&(5, false)).unwrap().cvs.extend([(21, 0x02), (22, 0x03)]);
+        assert_eq!(d[&(5, false)].cvs[&19], 74 | 0x80);
+        deliver(&mut d, 74, false, &[0x3F, 0x80 | 41]);
+        assert_eq!((d[&(3, false)].speed, d[&(3, false)].forward), (40, true));
+        assert_eq!((d[&(5, false)].speed, d[&(5, false)].forward), (40, false));
+        // Speed to its own address is ignored while it is in the consist; functions are not.
+        deliver(&mut d, 3, false, &[0x3F, 0x80 | 11]);
+        assert_eq!(d[&(3, false)].speed, 40);
+        deliver(&mut d, 74, false, &[0x80 | 0x10 | 0x02 | 0x01]);
+        assert_eq!(d[&(3, false)].functions[0..3], [false, false, false]);
+        assert_eq!(d[&(5, false)].functions[0..3], [true, false, true]);
+        // Out of the consist: its own address again.
+        deliver(&mut d, 3, false, &[0x12, 0]);
+        deliver(&mut d, 3, false, &[0x3F, 0x80 | 11]);
+        assert_eq!(d[&(3, false)].speed, 10);
+    }
 
     #[test]
     fn the_basic_speed_packets_are_the_nmras_and_read_back() {

@@ -318,4 +318,4 @@ Output:
 
 ## See also
 
-[roster](ref:roster), [roster_entry](ref:roster_entry), [dcc_base](ref:dcc_base), [Model railroading](ref:Model railroading)
+[roster](ref:roster), [roster_entry](ref:roster_entry), [consist](ref:consist), [dcc_base](ref:dcc_base), [Model railroading](ref:Model railroading)

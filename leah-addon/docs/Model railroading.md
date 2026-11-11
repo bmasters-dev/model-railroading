@@ -67,6 +67,7 @@ The motor shield's **B** screws are the **programming track**: a piece of track 
 | [locomotive](ref:locomotive) | A train by its address: its speed, direction, and functions |
 | [decoder_definition](ref:decoder_definition) | A decoder's settings by name: the CVs and bits each is kept in, its kind, range, and group |
 | [decoder_programmer](ref:decoder_programmer) | Reads and writes a whole decoder by its settings' names, on the programming track or the main |
+| [consist](ref:consist) | Several locomotives run as one train: by Leah, or by the decoders' own consist address |
 | [roster](ref:roster) | A record of each locomotive, kept in a file |
 | [roster_entry](ref:roster_entry) | One locomotive's record: its names, address, decoder settings, function labels, and more |
 | [Decoder functions](ref:Decoder functions) | A decoder's maker, its configuration (CV 29) by name, and its definitions |
@@ -87,4 +88,4 @@ The example app `decoder_workshop.leah` shows every setting of a decoder by name
 
 ## See also
 
-[Addons](ref:Addons), [dcc_base](ref:dcc_base), [locomotive](ref:locomotive), [decoder_definition](ref:decoder_definition), [decoder_programmer](ref:decoder_programmer), [roster](ref:roster), [roster_entry](ref:roster_entry), [Decoder functions](ref:Decoder functions), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job)
+[Addons](ref:Addons), [dcc_base](ref:dcc_base), [locomotive](ref:locomotive), [decoder_definition](ref:decoder_definition), [decoder_programmer](ref:decoder_programmer), [consist](ref:consist), [roster](ref:roster), [roster_entry](ref:roster_entry), [Decoder functions](ref:Decoder functions), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job)

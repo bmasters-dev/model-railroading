@@ -438,6 +438,23 @@ on the simulated base too; tested with a recorded pad (`LEAH_TEST_GAMEPAD`, each
 start). Later, as people ask: several throttles in a window, saved throttle layouts, a centre-off
 shunting slider.
 
+## Phase A, item 7: consists (built 2026-11-11, model-railroading#11)
+
+`consist(name:, address:, base:)`. Software (no address): each member its own packets, the consist's
+speed (0 to 126) made to fit each member's steps and limit (`Locomotive::drive`), a reversed member
+the other way. Advanced (`address:` 1 to 127): `add` sends S-9.2.1 2.3.1.4's consist control
+(`0001001D 0AAAAAAA`, twice; D reversed), speed and direction go to the consist address through a
+locomotive the consist keeps (128 steps, in the refresh table on a board); `break_up()`/`remove()`
+send consist address 0. A member's own speed is set to 0 as it joins and leaves (a stale speed
+repeating at its own address would start it on leaving). `set_function(n, on, to: "lead" | "all" |
+"consist" | $loco)`; `stop`, `emergency_stop` (the consist address and every member at once). The
+simulated decoders follow S-9.2.1: consist control sets CV 19; a consisted decoder ignores speed and
+direction at its own address; packets to a short address also reach every decoder with that consist
+address (speed flipped for a reversed unit; functions only as CV 21 and 22 allow), through
+`dcc::deliver`, which both delivery paths use. The forgotten-CV-19 check: `roster.entries(in_consist:
+true)` (and identify_decoder's warning, item 3). Not built (as people ask): reordering members, saved
+consists in the roster, NCE's consists (Phase E), the long consist address (CV 20).
+
 ## Decided: no BiDiB (the owner, 2026-11-11)
 
 BiDiB's specification is free but supervised: the working group must be told before anything is

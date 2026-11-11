@@ -1805,3 +1805,78 @@ fn the_gamepad_throttle_example_drives_with_a_pad() {
     assert!(printed.contains("[true, true, \"Speed "), "{printed}");
     assert!(printed.contains("\ntrue\n[false, 0, 0, \"Test pad\"]"), "{printed}");
 }
+
+#[test]
+fn consists_run_several_locomotives_as_one() {
+    // A software consist: each member its own packets, a reversed one the other way, in its own steps.
+    // An advanced one: consist control into CV 19 (reversed in bit 7), the speed to the consist
+    // address, which the members obey and their own addresses no longer; functions to the lead, to
+    // all, or to the consist address (as CV 21 and 22 let them); break_up() takes them out, stopped.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$a = locomotive(3)
+$b = locomotive(5, speed_steps: 28)
+$soft = consist(name: "Doubleheader")
+$soft.add($a)
+$soft.add($b, reversed: true)
+$soft.speed = 63
+print([$a.speed, $a.direction, $b.speed, $b.direction, $soft.kind, count($soft.members)])
+$soft.set_function(0, true)
+print([$a.function(0), $b.function(0)])
+$soft.set_function(1, true, to: "all")
+print([$a.function(1), $b.function(1)])
+$soft.stop()
+$soft.remove($b)
+print([count($soft.members), $b.speed])
+
+$c = locomotive(7)
+$d = locomotive(8)
+$d.write_cv(21, 2)
+$d.write_cv(22, 3)
+$adv = consist(address: 74)
+$adv.add($c)
+$adv.add($d, reversed: true)
+print([$base.decoder(7)["cvs"][19], $base.decoder(8)["cvs"][19], $adv.kind, $adv.address])
+$adv.speed = 40
+print([$base.decoder(7)["speed"], $base.decoder(7)["direction"], $base.decoder(8)["speed"], $base.decoder(8)["direction"]])
+$c.speed = 100
+print($base.decoder(7)["speed"])
+$adv.set_function(2, true, to: "consist")
+print([$base.decoder(7)["functions"][2], $base.decoder(8)["functions"][2]])
+$adv.break_up()
+print([$base.decoder(7)["cvs"][19], $base.decoder(8)["cvs"][19], count($adv.members), $base.decoder(7)["speed"]])
+$r = roster(join_path(make_temp_path(), "roster.json"))
+$r.add("Forgotten", address: 9, cvs: [19: 74, 29: 6])
+$r.add("Fine", address: 10, cvs: [19: 0])
+print(map($r.entries(in_consist: true), fn($e) => $e.name))
+foreach [function() { $adv.add($adv) }, function() { consist(address: 128) }, function() { $soft.remove($c) }, function() { $soft.set_function(0, true, to: "consist") }] as $f {
+    try {
+        $f()
+    } catch $e {
+        print($e.type + ": " + $e.message)
+    }
+}
+"#;
+    let out = run("consists", script);
+    assert!(out.success, "{}", out.stderr);
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "[63, \"forward\", 14, \"reverse\", \"software\", 2]",
+            "[true, false]",
+            "[true, true]",
+            "[1, 0]",
+            "[74, 202, \"advanced\", 74]",
+            "[40, \"forward\", 40, \"reverse\"]",
+            "40",
+            "[false, true]",
+            "[0, 0, 0, 0]",
+            "[\"Forgotten\"]",
+            "type_error: consist.add(): give a locomotive, not a consist",
+            "range_error: consist()'s `address:` is a consist address, 1 to 127 (a decoder keeps it in CV 19), not 128",
+            "range_error: consist.remove(): locomotive 7 isn't in this consist",
+            "type_error: consist.set_function(): `to: \"consist\"` is for an advanced consist (one with an address)",
+        ]
+    );
+}

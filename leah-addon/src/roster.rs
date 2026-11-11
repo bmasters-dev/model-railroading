@@ -365,7 +365,14 @@ impl Object for Roster {
             }
             "entries" => {
                 call.count_between(0, 0)?;
-                call.only_options(&["group", "address"])?;
+                call.only_options(&["group", "address", "in_consist"])?;
+                // (Entries whose kept CV 19 says the decoder is in a consist: a forgotten one makes a
+                // locomotive that "won't respond" at its own address.)
+                let in_consist = match call.option("in_consist") {
+                    None => None,
+                    Some(Value::Bool(b)) => Some(*b),
+                    Some(other) => return Err(Error::type_error(format!("{what}'s `in_consist:` is true or false, not {}", describe(other)))),
+                };
                 let group = match call.option("group") {
                     None => None,
                     Some(g) => Some(g.as_text().ok_or_else(|| Error::type_error(format!("{what}'s `group:` is a group's name")))?.to_string()),
@@ -381,6 +388,7 @@ impl Object for Roster {
                     .iter()
                     .filter(|e| group.as_ref().is_none_or(|g| e.groups.iter().any(|x| x.eq_ignore_ascii_case(g))))
                     .filter(|e| address.is_none_or(|a| i64::from(e.address) == a))
+                    .filter(|e| in_consist.is_none_or(|want| want == e.cvs.get(&19).is_some_and(|c| c & 0x7F != 0)))
                     .map(|e| e.id)
                     .collect();
                 Ok(Value::list(ids.into_iter().map(|id| self.entry_object(call, id))))

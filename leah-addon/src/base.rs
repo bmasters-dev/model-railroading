@@ -271,7 +271,7 @@ impl DccBase {
                 let data = &packet[..packet.len().saturating_sub(1)];
                 match dcc::target(data) {
                     (Target::Locomotive(address, long), instruction) => {
-                        dcc::obey(decoders.entry((address, long)).or_default(), instruction);
+                        dcc::deliver(&mut decoders, address, long, instruction);
                     }
                     (Target::Broadcast, instruction) => {
                         for state in decoders.values_mut() {
@@ -370,6 +370,16 @@ impl DccBase {
 
     /// As `send`, the packet going onto the simulated track `times` times (a write on the main needs
     /// two identical packets; the board sends every packet sent now three times anyway).
+    /// A packet sent now (not kept repeating), going onto the simulated track `times` times.
+    pub(crate) fn send_now(&self, packet: Vec<u8>, meaning: String, times: usize, call: &Call) -> Result<(), Error> {
+        self.send_times(packet, meaning, None, times, call)
+    }
+
+    /// The base station made last, the one a locomotive or consist runs on by default.
+    pub(crate) fn last() -> Option<Rc<DccBase>> {
+        LAST.with(|l| l.borrow().upgrade())
+    }
+
     fn send_times(&self, packet: Vec<u8>, meaning: String, keep: Option<u8>, times: usize, call: &Call) -> Result<(), Error> {
         let heard = if self.simulated() {
             self.power.get() && {
@@ -381,7 +391,7 @@ impl DccBase {
                 for data in read {
                     match dcc::target(&data) {
                         (Target::Locomotive(address, long), instruction) => {
-                            any |= dcc::obey(decoders.entry((address, long)).or_default(), instruction).is_some();
+                            any |= dcc::deliver(&mut decoders, address, long, instruction);
                         }
                         (Target::Broadcast, instruction) => {
                             // (Every decoder obeys; one that hasn't heard anything yet has nothing to stop.)
@@ -1111,6 +1121,23 @@ pub fn new_locomotive(call: &mut Call) -> Result<Value, Error> {
         Some(b) => b,
         None => return Err(hardware("locomotive(): there is no base station: make one first, dcc_base(\"/dev/ttyACM0\") or dcc_base(simulate: true)")),
     };
+    Ok(make_locomotive(call, &base, address, long, steps, speed_limit, momentary, labels, entry).0)
+}
+
+/// A locomotive made and kept on its base station (its refresh places, its place in the base's list):
+/// the script's value and the addon's own hold of it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn make_locomotive(
+    call: &mut Call,
+    base: &Rc<DccBase>,
+    address: u16,
+    long: bool,
+    steps: u8,
+    speed_limit: u8,
+    momentary: std::collections::BTreeSet<u8>,
+    labels: BTreeMap<u8, String>,
+    entry: Option<Rc<crate::roster::RosterEntry>>,
+) -> (Value, Option<Rc<Locomotive>>) {
     let (speed_place, lights_place) = if base.simulated() { (None, None) } else { base.places_for(address, long, call) };
     let value = call.new_object(Locomotive {
         base: base.clone(),
@@ -1128,12 +1155,13 @@ pub fn new_locomotive(call: &mut Call) -> Result<Value, Error> {
         labels: RefCell::new(labels),
         entry,
     });
-    if let Some(loco) = call.own_value::<Locomotive>(&value) {
+    let loco = call.own_value::<Locomotive>(&value);
+    if let Some(loco) = &loco {
         let mut kept = base.locomotives.borrow_mut();
         kept.retain(|w| w.strong_count() > 0);
-        kept.push(Rc::downgrade(&loco));
+        kept.push(Rc::downgrade(loco));
     }
-    Ok(value)
+    (value, loco)
 }
 
 impl Drop for Locomotive {
@@ -1211,7 +1239,7 @@ impl Locomotive {
     }
 }
 
-fn function_number(name: &str, v: &Value) -> Result<usize, Error> {
+pub(crate) fn function_number(name: &str, v: &Value) -> Result<usize, Error> {
     let n = whole(name, "a function's number", v)?;
     if !(0..dcc::FUNCTIONS as i64).contains(&n) {
         return Err(Error::range_error(format!("{name}(): a function's number is 0 (the headlight) to {}, not {n}", dcc::FUNCTIONS - 1)));
@@ -1234,6 +1262,33 @@ impl Locomotive {
             self.last_write.set(Some(std::time::Instant::now()));
         }
         Ok(())
+    }
+
+    pub(crate) fn base(&self) -> &Rc<DccBase> {
+        &self.base
+    }
+
+    /// Drives it at a speed of 126 steps (made to fit its own steps and limit) in a direction.
+    pub(crate) fn drive(&self, speed: u8, forward: bool, call: &mut Call) -> Result<(), Error> {
+        let top = u32::from(top_step(self.steps));
+        let step = ((u32::from(speed) * top + 63) / 126) as u8;
+        self.speed.set(step.min(self.speed_limit.get()));
+        self.forward.set(forward);
+        self.send_speed(false, call)?;
+        self.changed(call);
+        Ok(())
+    }
+
+    /// Stopped: eased by its decoder, or at once.
+    pub(crate) fn halt(&self, emergency: bool, call: &mut Call) -> Result<(), Error> {
+        self.speed.set(0);
+        self.send_speed(emergency, call)?;
+        self.changed(call);
+        Ok(())
+    }
+
+    pub(crate) fn set_function_now(&self, n: usize, on: bool, call: &mut Call) -> Result<(), Error> {
+        self.turn_function(n, on, call)
     }
 
     pub(crate) fn address(&self) -> u16 {

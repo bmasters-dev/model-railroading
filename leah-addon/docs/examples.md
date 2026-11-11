@@ -111,3 +111,28 @@ Output:
 ```
 [20, 20, 71, true, false]
 ```
+
+## A consist
+
+Two locomotives as one train, the second back to back with the first; in an advanced consist the
+decoders take the speed from the consist address.
+
+```leah
+$base = dcc_base(simulate: true)
+$base.power = true
+$a = locomotive(7)
+$b = locomotive(8)
+$train = consist(address: 74)
+$train.add($a)
+$train.add($b, reversed: true)
+$train.speed = 40
+print([$base.decoder(7)["speed"], $base.decoder(8)["direction"], $base.decoder(8)["cvs"][19]])
+$train.break_up()
+print($base.decoder(8)["cvs"][19])
+```
+
+Output:
+```
+[40, "reverse", 202]
+0
+```

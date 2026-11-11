@@ -9,6 +9,7 @@
 
 mod base;
 mod board;
+mod consist;
 mod dcc;
 mod definitions;
 mod makers;
@@ -53,6 +54,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("read_decoder_definition_file", &[Needs::Files], definitions::read_definition_file as Function),
             ("decoder_programmer", &[], programmer::new_programmer as Function),
             ("roster", &[Needs::Files], roster::new_roster as Function),
+            ("consist", &[], consist::new_consist as Function),
         ],
         needs: Some(needs),
         objects: vec![
@@ -60,6 +62,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("locomotive", &["address", "long", "base", "speed", "direction", "speed_steps", "speed_percent", "speed_limit", "momentary", "labels", "entry"], &["set_function", "function", "press_function", "release_function", "stop", "emergency_stop", "write_cv", "write_cv_bit"], &[]),
             ("decoder_definition", &["name", "maker", "versions", "settings", "groups", "cvs"], &["setting", "value_of", "cvs_of", "is_shown"], &[]),
             ("decoder_programmer", &["definition", "main_track", "values", "states", "cvs", "busy", "problems"], &["value", "set_value", "state", "read_all", "read", "write_changes", "write_all", "load_cvs", "cancel"], &["on_progress", "on_done"]),
+            ("consist", &["name", "address", "kind", "members", "speed", "direction", "base"], &["add", "remove", "is_reversed", "set_function", "stop", "emergency_stop", "break_up"], &[]),
             ("roster", &["path", "names", "count", "groups", "changed"], &["add", "entry", "entries", "remove", "save", "export_entries", "import_entries"], &[]),
             ("roster_entry", &["name", "road_name", "road_number", "address", "long", "decoder", "model", "notes", "picture", "groups", "cvs", "functions", "speed_limit", "attributes"], &["set_function", "attribute", "set_attribute"], &[]),
             ("dcc_program_job", &["port", "role", "board", "finished", "succeeded", "message"], &["wait"], &["on_finished"]),
