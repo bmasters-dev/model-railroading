@@ -21,3 +21,6 @@ private/
 
 # What a release puts together before uploading it.
 dist/
+
+# Python leftovers
+__pycache__/
