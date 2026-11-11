@@ -316,6 +316,14 @@ or `CV <cv> off <why>`; B's filler is the reset packet, never the idle one. Lear
   the IDE, addon 0.5.0): CV 3 read as 6 (the acceleration), the same 6 written back, and the decoder
   confirmed it: writing proven on a real decoder (SoundTraxx), nothing changed in it.
 
+## Decided: no BiDiB (the owner, 2026-11-11)
+
+BiDiB's specification is free but supervised: the working group must be told before anything is
+published or implemented, no part of its text may be published without written permission, and
+implementers agree to its compatibility testing and to fix what it finds within two months. The
+owner doesn't agree to those terms, so Leah won't support BiDiB, and its specification isn't kept
+in the private reference either. (A mainly European bus; nothing in the plan depends on it.)
+
 ## Rules to keep (agreed in principle)
 
 - **Emergency stop** always works, from code and from every throttle control.
