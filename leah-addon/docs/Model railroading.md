@@ -57,7 +57,7 @@ print($base.timing["one"])
 
 ## The programming track
 
-The motor shield's **B** screws are the **programming track**: a piece of track (or a treadmill) on its own, where a decoder's settings are read and written, its address among them ([read_cv](ref:dcc_base#read_cv), [read_address](ref:dcc_base#read_address), [write_cv](ref:dcc_base#write_cv), [write_address](ref:dcc_base#write_address)). Put the locomotive on it, read, then move it to the main track (the **A** screws) to drive. The main track's power is off while reading.
+The motor shield's **B** screws are the **programming track**: a piece of track (or a treadmill) on its own, where a decoder's settings are read and written, its address among them ([read_cv](ref:dcc_base#read_cv), [read_address](ref:dcc_base#read_address), [write_cv](ref:dcc_base#write_cv), [write_address](ref:dcc_base#write_address)). [identify_decoder](ref:dcc_base#identify_decoder) says which decoder it is, [reset_decoder](ref:dcc_base#reset_decoder) sets it back to its maker's settings, and [find_decoder_locks](ref:dcc_base#find_decoder_locks) finds the decoder locks of a locomotive with more than one decoder. Put the locomotive on it, read, then move it to the main track (the **A** screws) to drive. The main track's power is off while reading.
 
 ## Pages
 
@@ -65,6 +65,7 @@ The motor shield's **B** screws are the **programming track**: a piece of track 
 |---|---|
 | [dcc_base](ref:dcc_base) | The base station: track power, the packets sent, what each decoder understood, the emergency stop |
 | [locomotive](ref:locomotive) | A train by its address: its speed, direction, and functions |
+| [Decoder functions](ref:Decoder functions) | A decoder's maker, and its configuration (CV 29) by name |
 | [DCC board functions](ref:DCC board functions) | The boards plugged in, and loading Leah's programs onto them |
 | [dcc_program_job](ref:dcc_program_job) | A program being loaded onto a board |
 
@@ -78,4 +79,4 @@ The example app `dcc_throttle.leah` drives a real locomotive on Leah's base stat
 
 ## See also
 
-[Addons](ref:Addons), [dcc_base](ref:dcc_base), [locomotive](ref:locomotive), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job)
+[Addons](ref:Addons), [dcc_base](ref:dcc_base), [locomotive](ref:locomotive), [Decoder functions](ref:Decoder functions), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job)

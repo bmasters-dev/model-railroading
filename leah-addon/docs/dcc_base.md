@@ -80,6 +80,11 @@ $base.power = true
 | [write_address](#write_address) | address as number, long: boolean, in_background: boolean | |
 | [write_cv](#write_cv) | cv as number, value as number, index: array, in_background: boolean | |
 | [write_cv_bit](#write_cv_bit) | cv as number, bit as number, on as boolean, index: array | |
+| [identify_decoder](#identify_decoder) | tries: number, in_background: boolean | array |
+| [reset_decoder](#reset_decoder) | confirm: boolean, cv: number, value: number | array |
+| [find_decoder_locks](#find_decoder_locks) | most: number | array |
+| [unlock_decoder](#unlock_decoder) | lock as number | |
+| [lock_decoder](#lock_decoder) | lock as number | |
 | [decoder](#decoder) | address as number, long: boolean | array |
 | [emergency_stop](#emergency_stop) | | |
 
@@ -364,6 +369,89 @@ $base.write_cv_bit(29, 0, true)     ` reverse the locomotive's direction (CV 29,
 
 ---
 
+### identify_decoder
+
+**identify_decoder**(tries: 3, in_background: false) · array
+
+Says which decoder is in the locomotive on the **programming track**, from the settings every decoder has, as an array:
+
+| Key | Description |
+|---|---|
+| `maker_id` | CV 8, the maker's number |
+| `maker` | the maker's name for it, as the NMRA lists it (`"Throttle-Up (Soundtraxx)"`, `"Electronic Solutions Ulm GmbH"`, `"Train Control Systems"`), or `null` for a number the NMRA hasn't given out ([decoder_maker_name](ref:Decoder functions#decoder_maker_name)) |
+| `version` | CV 7, the decoder's version (what it means is the maker's) |
+| `family` | the product family CV 7 stands for, where the maker says: SoundTraxx's (`"Tsunami2"`, `"Econami"`, `"Blunami"`, ...); `null` otherwise |
+| `product` | SoundTraxx's Tsunami2, Econami, and Blunami say which product they are: an array of `customer` (CV 253: 1 for a decoder bought on its own, another number for one fitted by a model's maker), `sound` (`"steam"`, `"diesel"`, `"electric"`, `"UK steam"`, `"UK diesel"`), `revision`, and `id` (CV 256, the number in SoundTraxx's product list). `null` for other decoders |
+| `consist` | CV 19, the consist address it also answers to (0 for none) |
+| `consist_reversed` | `true` when it runs reversed in that consist |
+| `cv29` | its configuration (CV 29) by name, as [cv29_parts](ref:Decoder functions#cv29_parts) gives it |
+
+A decoder left in a consist (CV 19 not 0) is a common reason for a locomotive that "won't respond": then there is a warning saying so, as well. Reading takes a few seconds per setting, as for [read_cv](#read_cv); `tries:` is as there. With `in_background: true` it gives back `null` at once, and [on_read](#on_read) gets the array (its `what` is `"identity"`).
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+$id = $base.identify_decoder()
+print($id["maker"] + ", version " + $id["version"])
+if $id["cv29"]["long_address"] {
+    print("it answers to its long address")
+}
+```
+
+---
+
+### reset_decoder
+
+**reset_decoder**(confirm: false, cv: ..., value: ...) · array
+
+Sets every setting of the decoder on the **programming track** back to its maker's, as it came from the factory: its address (back to 3), its speeds, lights, sounds, everything. Nothing can bring the old settings back, so it is done only with `confirm: true`; without it, it is a `programming_error` and nothing is written.
+
+Each maker resets its decoders its own way. Leah reads CV 8 and uses the maker's reset from its manual: SoundTraxx, ESU, Digitrax, and ZIMO take 8 written into CV 8; TCS 2 into CV 8; NCE 2 into CV 30; MRC 1 into CV 125. For any other maker, it is a `programming_error` saying so, unless the script gives the reset from the decoder's manual as `cv:` and `value:` (both, or neither). A decoder busy resetting can't confirm the value written, so that isn't an error here.
+
+It gives back what it did, and the address the decoder answers to afterwards: `maker`, `cv`, `value`, `address`, `long`.
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+$done = $base.reset_decoder(confirm: true)
+print("reset; it answers to " + $done["address"] + " now")
+```
+
+---
+
+### find_decoder_locks
+
+**find_decoder_locks**(most: 7) · array
+
+The **decoder locks** on the programming track, as a list of numbers. A locomotive with more than one decoder (a motor decoder and a sound decoder, say), all answering to the same address, uses the NMRA's decoder lock so a setting can be changed in one of them alone: each decoder has its own lock number in CV 16 (by custom 1 for the motor decoder, 2 for sound, 3 and up for others), and takes a new value only while CV 15, the key, holds that number. Reading always works, so this asks the decoders whether CV 16 holds 1, 2, and so on up to `most:`, and writes nothing. A decoder without a lock (CV 16 is 0) isn't listed.
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+print($base.find_decoder_locks())       ` [1, 2]: a motor decoder and a sound decoder
+```
+
+---
+
+### unlock_decoder
+
+**unlock_decoder**(lock)
+
+Opens the decoder with that lock number to new values (it writes the key, CV 15): after it, [write_cv](#write_cv) and the others change only the decoders whose lock (CV 16) is that number, and those without a lock. A locked decoder doesn't take a value, so writing to it is a `programming_error` saying the decoder didn't confirm it. The key stays in the decoders until it is written again.
+
+```leah check
+$base = dcc_base("/dev/ttyACM0")
+$base.unlock_decoder(2)          ` the sound decoder
+$base.write_cv(3, 12)            ` its acceleration, the motor decoder's left as it was
+```
+
+---
+
+### lock_decoder
+
+**lock_decoder**(lock)
+
+Gives the decoder its lock number (CV 16), and the same key (CV 15) so it stays open for now. Every decoder takes a new lock, locked or not, so do it with **only that decoder** on the programming track, before the decoders are put together in the locomotive. `lock_decoder(0)` takes the lock away: the decoder takes every value again.
+
+---
+
 ### emergency_stop
 
 **emergency_stop**()
@@ -395,7 +483,7 @@ Output:
 
 **on_read**(what, value, error)
 
-A reading started with `in_background: true` is done. `what` is the CV's number ([read_cv](#read_cv)) or `"address"` ([read_address](#read_address)); `value` is what was read (a number, or the address's array), or `null` when it failed, and then `error` says why in words (`null` otherwise). The main track's power is off after a reading. A script without windows waits for it.
+A reading started with `in_background: true` is done. `what` is the CV's number ([read_cv](#read_cv)), `"address"` ([read_address](#read_address)), or `"identity"` ([identify_decoder](#identify_decoder)); `value` is what was read (a number, or the address's or the identity's array), or `null` when it failed, and then `error` says why in words (`null` otherwise). The main track's power is off after a reading. A script without windows waits for it.
 
 ```leah check
 $base = dcc_base("/dev/ttyACM0")
@@ -419,4 +507,4 @@ A writing started with `in_background: true` is done: `what` is the CV's number 
 
 ## See also
 
-[locomotive](ref:locomotive), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job), [Model railroading](ref:Model railroading)
+[locomotive](ref:locomotive), [Decoder functions](ref:Decoder functions), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job), [Model railroading](ref:Model railroading)

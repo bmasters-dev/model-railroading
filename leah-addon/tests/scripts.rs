@@ -1089,3 +1089,85 @@ foreach [function() {{ return $base.read_cv(99, tries: 1) }}, function() {{ retu
     assert_eq!(said.lines().filter(|l| *l == "R 99").count(), 1, "{said}");
     assert_eq!(said.lines().filter(|l| *l == "U 99 2").count(), 3, "{said}");
 }
+
+#[test]
+fn a_decoder_is_identified_and_reset_only_when_asked() {
+    // identify_decoder (the maker by the NMRA's list, CV 29 by name, a forgotten consist warned of);
+    // reset_decoder only with confirm: true, by the maker's own reset; an unknown maker's refused
+    // unless the script names the reset; decoder_maker_name, cv29_parts, make_cv29.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=7,29=38,8=141,7=71,19=5,3=9,17=194,18=218,253=1,254=2,255=17,256=36"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+$id = $base.identify_decoder()
+print([$id["maker"], $id["maker_id"], $id["version"], $id["consist"], $id["cv29"]["long_address"], $id["cv29"]["speed_steps"]])
+print([$id["family"], $id["product"]])
+try {{
+    $base.reset_decoder()
+}} catch $e {{
+    print($e.type + ": " + $e.message)
+}}
+print($base.reset_decoder(confirm: true))
+print([$base.read_cv(3), $base.read_cv(19)])
+print([decoder_maker_name(153), decoder_maker_name(250), cv29_parts(38)["long_address"], make_cv29(long_address: true), make_cv29(speed_steps: 14, analog: false)])
+"#,
+        boards.base
+    );
+    let id = run("identify", &script);
+    drop(boards);
+    assert!(id.success, "{}", id.stderr);
+    assert_eq!(
+        id.stdout,
+        concat!(
+            "[\"Throttle-Up (Soundtraxx)\", 141, 71, 5, true, 28]\n",
+            "[\"Tsunami2\", [\"customer\": 1, \"sound\": \"diesel\", \"revision\": 2, \"id\": 36]]\n",
+            "programming_error: dcc_base.reset_decoder() sets every one of the decoder's settings back to the maker's: give confirm: true to do it\n",
+            "[\"maker\": \"Throttle-Up (Soundtraxx)\", \"cv\": 8, \"value\": 8, \"address\": 3, \"long\": false]\n",
+            "[0, 0]\n",
+            "[\"Train Control Systems\", null, true, 38, 0]\n",
+        )
+    );
+    assert!(id.stderr.contains("the decoder's consist address (CV 19) is 5"), "{}", id.stderr);
+
+    // A maker whose reset isn't known: refused, unless the script gives it.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=7,29=6,8=99"]) else { return };
+    let unknown = run(
+        "reset-unknown",
+        &format!("$base = dcc_base(\"{}\")\ntry {{\n    $base.reset_decoder(confirm: true)\n}} catch $e {{\n    print($e.message)\n}}\nprint($base.reset_decoder(confirm: true, cv: 8, value: 8)[\"address\"])\n", boards.base),
+    );
+    drop(boards);
+    assert!(unknown.success, "{}", unknown.stderr);
+    assert_eq!(unknown.stdout, "dcc_base.reset_decoder(): no reset is known for Lenz Elektronik GmbH (CV 8 = 99): give the maker's own reset from its manual, as cv: and value:\n3\n");
+}
+
+#[test]
+fn a_locked_decoder_is_found_unlocked_and_locked() {
+    // NMRA decoder lock (CV 15 the key, CV 16 the lock): found by asking, without writing; a locked
+    // decoder doesn't take a write; unlocked, it does; lock_decoder(0) takes the lock away.
+    let Some(boards) = fake_boards(&["--shield", "--cvs", "1=3,29=6,3=5,15=0,16=2"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+print($base.find_decoder_locks())
+try {{
+    $base.write_cv(3, 9)
+}} catch $e {{
+    print($e.type)
+}}
+$base.unlock_decoder(2)
+$base.write_cv(3, 9)
+print($base.read_cv(3))
+$base.lock_decoder(0)
+print([$base.find_decoder_locks(most: 3), $base.read_cv(15), $base.read_cv(16)])
+"#,
+        boards.base
+    );
+    let locks = run("decoder-locks", &script);
+    drop(boards);
+    assert!(locks.success, "{}", locks.stderr);
+    assert_eq!(locks.stdout, "[2]\nprogramming_error\n9\n[[], 0, 0]\n");
+}

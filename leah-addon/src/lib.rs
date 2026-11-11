@@ -10,6 +10,7 @@
 mod base;
 mod board;
 mod dcc;
+mod makers;
 
 use leah_addon_kit::{Function, Needs, Value};
 
@@ -39,10 +40,13 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("locomotive", &[], base::new_locomotive as Function),
             ("dcc_ports", &[Needs::Device], base::dcc_ports as Function),
             ("load_dcc_program", &[Needs::Programs, Needs::Device], base::load_dcc_program as Function),
+            ("decoder_maker_name", &[], base::decoder_maker_name as Function),
+            ("cv29_parts", &[], base::cv29_parts as Function),
+            ("make_cv29", &[], base::make_cv29 as Function),
         ],
         needs: Some(needs),
         objects: vec![
-            ("dcc_base", &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"], &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit"], &["on_read", "on_write"]),
+            ("dcc_base", &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"], &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit", "identify_decoder", "reset_decoder", "find_decoder_locks", "unlock_decoder", "lock_decoder"], &["on_read", "on_write"]),
             ("locomotive", &["address", "long", "base", "speed", "direction"], &["set_function", "function", "stop", "emergency_stop", "write_cv", "write_cv_bit"], &[]),
             ("dcc_program_job", &["port", "role", "board", "finished", "succeeded", "message"], &["wait"], &["on_finished"]),
         ],

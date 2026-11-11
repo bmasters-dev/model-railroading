@@ -109,6 +109,12 @@ def main():
         except OSError:
             pass
 
+    def locked(cv):
+        # (NMRA decoder lock: a decoder whose CV 16 isn't 0 takes a write only when CV 15 equals
+        # it; writes to CV 15 and 16 themselves are always taken.)
+        lock = cvs.get(16, 0) if cvs else 0
+        return cv not in (15, 16) and lock != 0 and cvs.get(15, 0) != lock
+
     def heard(packet):
         nonlocal packets_this_second
         packets_this_second += 1
@@ -192,7 +198,7 @@ def main():
                         say(base_master, f"U {cv} {bit} {answer}")
                     else:
                         bit, on = nums[1], nums[2]
-                        if cvs:
+                        if cvs and not locked(cv):
                             old = cvs.get(cv, 0)
                             cvs[cv] = old | 1 << bit if on else old & ~(1 << bit)
                             say(base_master, f"Y {cv} {bit} {on} ok")
@@ -208,7 +214,15 @@ def main():
                         power = False
                         say(base_master, "OFF reading a setting: the main track's power is off while the programming track is on")
                     time.sleep(0.2)
-                    if cvs:
+                    if cvs and (cv, value) in ((8, 8), (8, 2), (30, 2), (125, 1)):
+                        # (A factory reset: the settings go back to the maker's, and the decoder, busy
+                        # resetting, can't confirm the write.)
+                        keep = {k: cvs[k] for k in (7, 8) if k in cvs}
+                        cvs.clear()
+                        cvs.update({1: 3, 29: 6, 3: 0, 19: 0})
+                        cvs.update(keep)
+                        say(base_master, f"W {cv} {value} unconfirmed (baseline 0 mA)")
+                    elif cvs and not locked(cv):
                         cvs[cv] = value
                         say(base_master, f"W {cv} {value} ok")
                     else:

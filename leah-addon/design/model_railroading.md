@@ -342,6 +342,29 @@ decoder of the last 20+ years has direct mode; they come back if someone's decod
 quicker index (keeping the programming track powered across the CV 31/32 writes and the access) is a
 later speed-up.
 
+## Phase A, item 3: decoder identification and named bits (built 2026-11-11, model-railroading#7)
+
+No firmware change (v6's R, W, and V do it all). `identify_decoder()` reads CV 8, 7, 19, and 29 and
+gives the maker by the NMRA's list (`src/makers.rs`, the 168 IDs of Appendix A to S-9.2.2, revised
+2026-08-17), the version, the consist address (a warning when it isn't 0: a forgotten consist is the
+usual "it won't respond"), and CV 29 by name. **Product IDs:** only SoundTraxx's own guide (rev. F,
+2025-09) says what its CV 7 values mean (the family) and where Tsunami2, Econami, and Blunami keep the
+product (CV 253 customer, 254 sound type, 255 bits 3 to 7 the revision, 256 the product number);
+the product number is given as a number, its name left to the decoder definitions (item 4). ESU's
+LokSound 5 manual documents no product ID; other makers' come with their definitions. Global
+functions needing no base: `decoder_maker_name`, `cv29_parts`, `make_cv29`.
+
+`reset_decoder(confirm: true)`: without `confirm:` a `programming_error`; each maker's documented
+reset (SoundTraxx, ESU, Digitrax, ZIMO: CV 8 = 8; TCS: CV 8 = 2; NCE: CV 30 = 2; MRC: CV 125 = 1),
+an unknown maker's refused unless the script gives `cv:` and `value:`; the write not being confirmed
+is taken as the reset (a resetting decoder can't acknowledge); it reads the address afterwards.
+
+**Decoder locks** (S-9.2.2, CV 15 the key, CV 16 the lock; writes to 15 and 16 always taken; reads
+never locked): `find_decoder_locks(most: 7)` asks "is CV 16 = n?" for each n and writes nothing;
+`unlock_decoder(n)` writes CV 15; `lock_decoder(n)` writes CV 16 then CV 15 (every decoder on the
+track takes it, so with only that decoder there). **For item 4:** the decoder programmer's "write
+all" never writes CV 15 or 16, nor CV 7 and 8.
+
 ## Decided: no BiDiB (the owner, 2026-11-11)
 
 BiDiB's specification is free but supervised: the working group must be told before anything is

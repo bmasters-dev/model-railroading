@@ -13,9 +13,10 @@ use leah_addon_kit::{Call, Error, Events, Object, Value};
 
 use crate::board::{self, Link, Timing};
 use crate::dcc::{self, DecoderState, Reader, Target};
+use crate::makers;
 
 const BASE_PROPS: &[&str] = &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit"];
-const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit"];
+const BASE_FUNCS: &[&str] = &["emergency_stop", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit", "identify_decoder", "reset_decoder", "find_decoder_locks", "unlock_decoder", "lock_decoder"];
 const LOCO_PROPS: &[&str] = &["address", "long", "base", "speed", "direction"];
 const LOCO_FUNCS: &[&str] = &["set_function", "function", "stop", "emergency_stop", "write_cv", "write_cv_bit"];
 /// The least time between two writes on the main to one locomotive, unless `pause:` says otherwise:
@@ -702,6 +703,136 @@ impl Object for DccBase {
                 self.after_reading(call);
                 done.map(|_| Value::Null).map_err(|e| programming("dcc_base.write_address()", e))
             }
+            "identify_decoder" => {
+                call.count_between(0, 0)?;
+                call.only_options(&["in_background", "tries"])?;
+                let tries = tries_option(call, "dcc_base.identify_decoder()")?;
+                let background = bool_option(call, "in_background", false)?;
+                let turn = self.reading_turn("dcc_base.identify_decoder()", call)?;
+                let identify = move |t: &board::ReadingTurn| -> Result<Value, String> {
+                    let maker = t.read_cv_tries(8, tries)?;
+                    let version = t.read_cv_tries(7, tries)?;
+                    let consist = t.read_cv_tries(19, tries)?;
+                    let config = t.read_cv_tries(29, tries)?;
+                    // (SoundTraxx's Tsunami2, Econami, and Blunami say which product they are in CV 253
+                    // to 256: its own "product identification" guide.)
+                    let product = if maker == 141 && (70..=72).contains(&version) {
+                        let mut v = Vec::new();
+                        for cv in 253..=256 {
+                            v.push(t.read_cv_tries(cv, tries)?);
+                        }
+                        Value::map([
+                            ("customer", Value::from(v[0])),
+                            ("sound", makers::soundtraxx_sound(v[1]).map_or(Value::Null, Value::from)),
+                            ("revision", Value::from(v[2] >> 3)),
+                            ("id", Value::from(v[3])),
+                        ])
+                    } else {
+                        Value::Null
+                    };
+                    Ok(identity_value(maker, version, consist, config, product))
+                };
+                if background {
+                    self.read_in_background(turn, Value::from("identity"), identify);
+                    return Ok(Value::Null);
+                }
+                let read = identify(&turn);
+                drop(turn);
+                self.after_reading(call);
+                let value = read.map_err(|e| programming("dcc_base.identify_decoder()", e))?;
+                if let Some(c) = value.get("consist").and_then(Value::as_int).filter(|c| *c != 0) {
+                    call.warn(format!("the decoder's consist address (CV 19) is {c}: it answers to that address too, and ignores some commands at its own (clear CV 19 to take it out of the consist)"));
+                }
+                Ok(value)
+            }
+            "reset_decoder" => {
+                call.count_between(0, 0)?;
+                call.only_options(&["confirm", "cv", "value"])?;
+                let what = "dcc_base.reset_decoder()";
+                if !bool_option(call, "confirm", false)? {
+                    return Err(Error::new("programming_error", format!("{what} sets every one of the decoder's settings back to the maker's: give confirm: true to do it")));
+                }
+                let given = match (call.option("cv"), call.option("value")) {
+                    (None, None) => None,
+                    (Some(c), Some(v)) => match (c.as_int(), v.as_int()) {
+                        (Some(c @ 1..=1024), Some(v @ 0..=255)) => Some((c, v)),
+                        _ => return Err(Error::range_error(format!("{what}'s `cv:` is 1 to 1024 and `value:` 0 to 255"))),
+                    },
+                    _ => return Err(Error::type_error(format!("{what}: give both `cv:` and `value:` (the maker's reset), or neither"))),
+                };
+                let turn = self.reading_turn(what, call)?;
+                let done = (|| -> Result<Value, String> {
+                    let maker = turn.read_cv(8)?;
+                    let (cv, value) = match given.or_else(|| maker_reset(maker as u8)) {
+                        Some(r) => r,
+                        None => {
+                            let name = makers::maker_name(maker as u8).unwrap_or("an unknown maker");
+                            return Err(format!("no reset is known for {name} (CV 8 = {maker}): give the maker's own reset from its manual, as cv: and value:"));
+                        }
+                    };
+                    // (The decoder resets as it takes the value, so it can't confirm it: not confirmed is
+                    // what a reset looks like.)
+                    match turn.write_cv(cv, value) {
+                        Ok(()) => {}
+                        Err(e) if e.starts_with("the decoder didn't confirm") => {}
+                        Err(e) => return Err(e),
+                    }
+                    let (address, long) = turn.read_address()?;
+                    Ok(Value::map([
+                        ("maker", Value::from(makers::maker_name(maker as u8).unwrap_or(""))),
+                        ("cv", Value::from(cv)),
+                        ("value", Value::from(value)),
+                        ("address", Value::from(address)),
+                        ("long", Value::from(long)),
+                    ]))
+                })();
+                drop(turn);
+                self.after_reading(call);
+                done.map_err(|e| programming(what, e))
+            }
+            "find_decoder_locks" => {
+                let what = "dcc_base.find_decoder_locks()";
+                call.count_between(0, 0)?;
+                call.only_options(&["most"])?;
+                let most = match call.option("most") {
+                    None => 7,
+                    Some(v) => match v.as_int() {
+                        Some(n @ 1..=255) => n,
+                        _ => return Err(Error::range_error(format!("{what}'s `most:` is 1 to 255, not {}", describe(v))).at(call.option_line("most"))),
+                    },
+                };
+                let turn = self.reading_turn(what, call)?;
+                // (The lock guards writes only: asking whether CV 16 holds each number finds every
+                // decoder's lock, whatever CV 15 is, and changes nothing.)
+                let found = (|| -> Result<Value, String> {
+                    let mut found = Vec::new();
+                    for id in 1..=most {
+                        if turn.verify_cv(16, id)? {
+                            found.push(Value::from(id));
+                        }
+                    }
+                    Ok(Value::list(found))
+                })();
+                drop(turn);
+                self.after_reading(call);
+                found.map_err(|e| programming(what, e))
+            }
+            "unlock_decoder" | "lock_decoder" => {
+                let what = format!("dcc_base.{function}()");
+                call.count_between(1, 1)?;
+                call.only_options(&[])?;
+                let id = whole(&format!("dcc_base.{function}"), "a decoder's lock number", call.arg(0))?;
+                if !(0..=255).contains(&id) {
+                    return Err(Error::range_error(format!("{what}: a decoder's lock number (CV 16) is 0 to 255, not {id}")));
+                }
+                let turn = self.reading_turn(&what, call)?;
+                // (Locking: CV 16 is the decoder's lock, then CV 15, the key, the same so it stays
+                // open. Writes to CV 15 and 16 are always taken, whatever the lock.)
+                let done = if function == "lock_decoder" { turn.write_cv(16, id).and_then(|()| turn.write_cv(15, id)) } else { turn.write_cv(15, id) };
+                drop(turn);
+                self.after_reading(call);
+                done.map(|()| Value::Null).map_err(|e| programming(&what, e))
+            }
             "verify_cv" | "read_cv_bit" | "write_cv_bit" => {
                 let what = format!("dcc_base.{function}()");
                 let counts = match function { "verify_cv" | "read_cv_bit" => 2, _ => 3 };
@@ -746,6 +877,90 @@ impl Object for DccBase {
             other => Err(call.unknown_function("dcc_base", other, BASE_FUNCS)),
         }
     }
+}
+
+/// Each maker's documented factory reset (CV, value), from its own manual (the private reference):
+/// most write 8 into CV 8; TCS 2 into CV 8; NCE 2 into CV 30; MRC 1 into CV 125.
+fn maker_reset(maker: u8) -> Option<(i64, i64)> {
+    match maker {
+        141 | 151 | 129 | 145 => Some((8, 8)), // SoundTraxx, ESU, Digitrax, ZIMO
+        153 => Some((8, 2)),                   // TCS
+        11 => Some((30, 2)),                   // NCE
+        143 => Some((125, 1)),                 // MRC
+        _ => None,
+    }
+}
+
+/// What `identify_decoder` gives: the maker (by the NMRA's list), its version, the consist address,
+/// and CV 29's parts.
+fn identity_value(maker: i64, version: i64, consist: i64, config: i64, product: Value) -> Value {
+    Value::map([
+        ("maker_id", Value::from(maker)),
+        ("maker", makers::maker_name(maker as u8).map_or(Value::Null, Value::from)),
+        ("version", Value::from(version)),
+        ("family", makers::family_name(maker as u8, version as u8).map_or(Value::Null, Value::from)),
+        ("product", product),
+        ("consist", Value::from(consist & 0x7F)),
+        ("consist_reversed", Value::from(consist & 0x80 != 0)),
+        ("cv29", cv29_value(config)),
+    ])
+}
+
+/// CV 29's bits by name (S-9.2.2).
+fn cv29_value(v: i64) -> Value {
+    Value::map([
+        ("reversed", Value::from(v & 0x01 != 0)),
+        ("speed_steps", Value::from(if v & 0x02 != 0 { 28 } else { 14 })),
+        ("analog", Value::from(v & 0x04 != 0)),
+        ("railcom", Value::from(v & 0x08 != 0)),
+        ("speed_table", Value::from(v & 0x10 != 0)),
+        ("long_address", Value::from(v & 0x20 != 0)),
+        ("accessory", Value::from(v & 0x80 != 0)),
+    ])
+}
+
+/// `decoder_maker_name($id)`: the maker's name for a CV 8 value, as the NMRA lists it, or null.
+pub fn decoder_maker_name(call: &mut Call) -> Result<Value, Error> {
+    call.count_between(1, 1)?;
+    call.only_options(&[])?;
+    let id = whole("decoder_maker_name", "a maker's ID (CV 8)", call.arg(0))?;
+    if !(0..=255).contains(&id) {
+        return Err(Error::range_error(format!("decoder_maker_name(): a maker's ID (CV 8) is 0 to 255, not {id}")));
+    }
+    Ok(makers::maker_name(id as u8).map_or(Value::Null, Value::from))
+}
+
+/// `cv29_parts($value)`: CV 29's bits by name.
+pub fn cv29_parts(call: &mut Call) -> Result<Value, Error> {
+    call.count_between(1, 1)?;
+    call.only_options(&[])?;
+    let v = whole("cv29_parts", "CV 29's value", call.arg(0))?;
+    if !(0..=255).contains(&v) {
+        return Err(Error::range_error(format!("cv29_parts(): CV 29's value is 0 to 255, not {v}")));
+    }
+    Ok(cv29_value(v))
+}
+
+/// `make_cv29(reversed:, speed_steps:, analog:, railcom:, speed_table:, long_address:)`: CV 29's value
+/// (a locomotive decoder's: 28/128 speed steps and analog running on unless given).
+pub fn make_cv29(call: &mut Call) -> Result<Value, Error> {
+    call.count_between(0, 0)?;
+    call.only_options(&["reversed", "speed_steps", "analog", "railcom", "speed_table", "long_address"])?;
+    let steps = match call.option("speed_steps") {
+        None => 28,
+        Some(v) => match v.as_int() {
+            Some(n @ (14 | 28 | 128)) => n,
+            _ => return Err(Error::range_error(format!("make_cv29()'s `speed_steps:` is 14, 28, or 128 (28 and 128 share a bit), not {}", describe(v))).at(call.option_line("speed_steps"))),
+        },
+    };
+    let mut v = 0;
+    if bool_option(call, "reversed", false)? { v |= 0x01; }
+    if steps != 14 { v |= 0x02; }
+    if bool_option(call, "analog", true)? { v |= 0x04; }
+    if bool_option(call, "railcom", false)? { v |= 0x08; }
+    if bool_option(call, "speed_table", false)? { v |= 0x10; }
+    if bool_option(call, "long_address", false)? { v |= 0x20; }
+    Ok(Value::from(v))
 }
 
 /// A decoder's state, as `decoder()` gives it.

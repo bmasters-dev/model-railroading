@@ -24,3 +24,23 @@ Output:
 [40, "reverse"]
 03 3F 29 15
 ```
+
+## A decoder's maker and its configuration
+
+CV 8's maker by the NMRA's list, and CV 29's bits by name, both ways.
+
+```leah
+print(decoder_maker_name(151))
+$c = cv29_parts(38)
+print([$c["long_address"], $c["speed_steps"], $c["analog"], $c["reversed"]])
+print(make_cv29(long_address: true))
+print(make_cv29(reversed: true, speed_steps: 14, analog: false))
+```
+
+Output:
+```
+Electronic Solutions Ulm GmbH
+[true, 28, true, false]
+38
+1
+```
