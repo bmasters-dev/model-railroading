@@ -211,7 +211,11 @@ impl DccBase {
             *self.timing.borrow_mut() = None;
         }
         for line in said {
-            if line.starts_with("OFF ") {
+            if line.starts_with("OFF reading a setting") {
+                // (Reading turns the main track off by design, as read_cv() says: no warning.)
+                self.power.set(false);
+                self.current.set(0);
+            } else if line.starts_with("OFF ") {
                 self.power.set(false);
                 self.current.set(0);
                 call.warn(format!("the base station turned the track power off by itself: {}", line.trim_start_matches("OFF ")));

@@ -735,6 +735,8 @@ foreach [function() {{ return $base.read_cv(7) }}, function() {{ return $base.re
     let read = run("read-cv", &script);
     drop(boards);
     assert!(read.success, "{}", read.stderr);
+    // (Reading turns the main track off by design: no warning says the board did it by itself.)
+    assert!(!read.stderr.contains("turned the track power off by itself"), "{}", read.stderr);
     assert_eq!(
         read.stdout,
         concat!(

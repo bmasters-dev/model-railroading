@@ -33,7 +33,7 @@ $win.add($address_arrows)
 $long = checkbox(left: 200, top: 116, text: "Long address")
 $win.add($long)
 $read = button(left: 330, top: 110, width: 160, height: 34, text: "Read address", enabled: false, _
-    tooltip: "Reads the address of the locomotive on the programming track (the shield's B screws)")
+    tooltip: "Reads the address of the locomotive on the programming track (the shield's B screws); with the track power off")
 $win.add($read)
 $current = label(left: 510, top: 118, width: 270, lock_right: true, text: "")
 $win.add($current)
@@ -104,9 +104,11 @@ function look_for_boards() {
 
 function set_driving_enabled($on) {
     global $power, $throttle, $direction, $stop, $emergency, $function_buttons, $read
-    foreach [$power, $throttle, $direction, $stop, $emergency, $read] as $c {
+    foreach [$power, $throttle, $direction, $stop, $emergency] as $c {
         $c.enabled = $on
     }
+    ` (Reading turns the main track off: offered only while its power is off.)
+    $read.enabled = $on and not $power.value
     foreach $function_buttons as $b {
         $b.enabled = $on
     }
@@ -169,8 +171,9 @@ $connect.on_click = function() {
         }
         $base.on_read = function($what, $value, $error) {
             global $address, $long, $read, $status, $power
-            $read.enabled = true
             $power.value = false
+            $power.enabled = true
+            $read.enabled = true
             if $error != null {
                 $status.text = "Couldn't read the address: " + $error
                 return
@@ -193,21 +196,24 @@ $connect.on_click = function() {
 ` Reads the address of the locomotive on the programming track, in the background (a few seconds,
 ` more when its wheels need another try); the main track's power is off meanwhile.
 $read.on_click = function() {
-    global $base, $read, $status, $throttle
+    global $base, $read, $status, $throttle, $power
     if $base == null {
         return
     }
     $throttle.value = 0
     $read.enabled = false
+    ` (No track power while reading: the switch comes back with the answer.)
+    $power.enabled = false
     $status.text = "Reading the address on the programming track (the B screws): the main track's power is off meanwhile..."
     $base.read_address(in_background: true)
 }
 
 $power.on_value_changed = function() {
-    global $base, $power
+    global $base, $power, $read
     if $base != null and $base.power != $power.value {
         $base.power = $power.value
     }
+    $read.enabled = $base != null and not $power.value
 }
 
 $address.on_text_changed = function() {
