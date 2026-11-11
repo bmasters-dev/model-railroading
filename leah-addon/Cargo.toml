@@ -3,7 +3,7 @@
 #     leah --install-addon https://github.com/bmasters-dev/model-railroading
 [package]
 name = "leah-addon-model-railroading"
-version = "0.3.1"
+version = "0.4.0"
 license = "MIT OR Apache-2.0"
 edition = "2024"
 
