@@ -39,7 +39,11 @@
 //     driver chops on and off still adds up (the first 20 ms after the power comes on are left out,
 //     for the track's and decoders' capacitors to charge);
 //   - the shield's driver says it has a fault (too hot, a short it caught itself, or no supply in the
-//     shield's jack), at once.
+//     shield's jack) for about 2 ms all told, counted as the current is (rising twice as fast while
+//     it says so as it falls while it doesn't), after the same first 20 ms: the driver flags a fault
+//     for a moment whenever it catches a surge itself, and a DCC meter or a sound decoder's
+//     capacitors make one as the power comes on (found on the owner's bench, 2026-11-11: cutting at
+//     the first flag cut the power whenever a DCC meter was on the track).
 // The current is sampled by the analog reader's own interrupt, about 9,600 times a second, which cuts
 // the power itself: nothing the PC sends, or the main loop is busy with, delays it. After cutting off
 // for the current or a fault, it won't turn the power on again for 2 seconds. Without the shield
@@ -67,8 +71,8 @@ volatile uint16_t limit_steps = 1500 / 5.08;   // the limit, in the analog reade
 uint16_t limit_ma = 1500;
 // The analog reader's interrupt's own: the over-limit count, the samples since the power came on, the
 // sum for the average said, and why it cut the power (0: it didn't; 1: the current; 2: a fault).
-const uint16_t TRIP_COUNT = 96, BLANK_SAMPLES = 192;
-volatile uint16_t over_count = 0, since_on = 0, tripped_steps = 0;
+const uint16_t TRIP_COUNT = 96, FAULT_COUNT = 40, BLANK_SAMPLES = 192;
+volatile uint16_t over_count = 0, fault_count = 0, since_on = 0, tripped_steps = 0;
 volatile uint32_t sum_steps = 0;
 volatile uint16_t sum_count = 0;
 volatile uint8_t tripped = 0;
@@ -131,8 +135,9 @@ ISR(ADC_vect) {
   if (!power) return;
   sum_steps += steps;
   sum_count++;
-  if (!(PINF & _BV(PF4))) { tripped_steps = steps; cut_power_now(2); return; }   // A4 low: a fault
   if (since_on < BLANK_SAMPLES) { since_on++; return; }
+  if (!(PINF & _BV(PF4))) fault_count += 2; else if (fault_count) fault_count--;             // A4 low: a fault
+  if (fault_count >= FAULT_COUNT) { tripped_steps = steps; fault_count = 0; cut_power_now(2); return; }
   if (steps > limit_steps) over_count += 2; else if (over_count) over_count--;
   if (over_count >= TRIP_COUNT) { tripped_steps = steps; over_count = 0; cut_power_now(1); }
 }
@@ -142,6 +147,7 @@ void set_power(bool on) {
   power = on;
   if (on) {
     over_count = 0;
+    fault_count = 0;
     since_on = 0;
     TCCR1A |= _BV(COM1B1);                                            // the signal first...
     if (shield) digitalWrite(POWER_PIN, HIGH);                        // ...then the shield's output on

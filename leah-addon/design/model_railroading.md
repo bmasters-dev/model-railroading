@@ -253,6 +253,31 @@ its barrel jack, and no locomotive. Decided by Claude (the owner can overrule):
   the shield's pin 12 socket heard every packet, 57.5 to 58.0 and 99.5 to 100.0 us. **Step 3 passes.**
   (No dead short was tried: no power resistor on hand, and the cut-off is proved without one.)
 
+## Stage 1d: the first locomotive (2026-11-11, the owner's bench)
+
+Step 5 of the safe ladder, done with the owner's dropped HO sound locomotive (step 4 dropped: the
+owner's NCE and Digitrax gear isn't set up on the bench, so Leah is the first thing to talk to it;
+steps 2 and 3 had proved the signal and the protection). On a treadmill wired to channel A, 12 V, the
+limit at 1 A:
+
+- **The address was found by its horn:** the broadcast address 0 with F0 and F2 (`00 92 92`) sounded
+  the horn, so the decoder heard Leah; then F2 at one address at a time: **address 1** answered, 730
+  (long) and 3 didn't. The headlight lit only once a direction had been sent (`speed 0, forward`):
+  some decoders keep F0's light off until they have been told a direction.
+- **It moved:** speed 5 forward for 4 s (the decoder's own acceleration first, then 130 to 160 mA),
+  stopped at speed 0; the same in reverse (about 210 mA); speed 20 (about 165 mA), then the
+  **emergency stop**: the wheels stopped at once (the current back to 15 mA within the next
+  half-second reading). No cut-off fired; the current never came near the limit.
+- **Found on the way:** the driver flags a fault for a moment whenever it catches a surge, and a DCC
+  meter (or a sound decoder's capacitors) makes one as the power comes on: the program's first cut at
+  the first flag cut the power whenever a DCC meter was on the track, so the fault flag now has the
+  same 20 ms start-up grace and an adding-up count as the current (2 ms all told). Dirty wheels gave a
+  patchy connection (0 mA, sounds coming and going) until cleaned. A missing 12 V supply looks exactly
+  like a fault, and the board says so in those words. One DCC meter, on its IN side only, still trips
+  the driver on a treadmill (not on flex track): left for later; the locomotive runs without it.
+- **Not yet:** reading or writing a decoder's settings (the programming track, a later stage), so
+  Leah can't yet read an address; the expensive locomotive goes the same way when the owner chooses.
+
 ## Rules to keep (agreed in principle)
 
 - **Emergency stop** always works, from code and from every throttle control.
