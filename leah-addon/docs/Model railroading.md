@@ -89,6 +89,8 @@ The example app `decoder_workshop.leah` shows every setting of a decoder by name
 
 The example app `phone_server.leah` lets phones drive the locomotives: phone throttle apps that work with WiThrottle, such as Engine Driver, list it by its name on the Wi-Fi. It shows the phones connected and how many locomotives each holds, switches the track power, has two turnouts the phones can throw too, and starts a fast clock the phones show.
 
+The example app `browser_throttle.leah` is a throttle in any web browser, with nothing to install: phones, tablets, and computers on the Wi-Fi open the address it shows, choose a locomotive from the roster or by its address, and drive it (speed, direction, stop, the function keys labelled from the roster, the track power, and an emergency stop). The page is inside the app, served by Leah's web server, and talks to Leah over a web socket, so the whole app is one file.
+
 ## See also
 
 [Addons](ref:Addons), [dcc_base](ref:dcc_base), [locomotive](ref:locomotive), [decoder_definition](ref:decoder_definition), [decoder_programmer](ref:decoder_programmer), [consist](ref:consist), [roster](ref:roster), [roster_entry](ref:roster_entry), [phone_throttle_server](ref:phone_throttle_server), [Decoder functions](ref:Decoder functions), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job)

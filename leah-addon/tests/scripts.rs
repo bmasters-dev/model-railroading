@@ -2236,3 +2236,42 @@ print($server.port)
     let (ok, err) = run.end();
     assert!(ok, "{err}");
 }
+
+#[test]
+fn the_browser_throttle_serves_its_page_and_drives_from_a_web_socket() {
+    // Start on the simulated base, fetch the page as a browser would, then speak to it as the page's
+    // code does: take locomotive 3, set its speed and a function, and read what the decoder understood.
+    let driver = r#"call_later(300, function() {
+    global $start
+    $start.click()
+    call_later(500, function() {
+        run_in_background(work: function() {
+            return http_get("http://127.0.0.1:8080/")
+        }, done: function($answer) {
+            global $c
+            print([$answer["status"], contains($answer["body"], "EMERGENCY STOP")])
+            $c = web_socket(address: "ws://127.0.0.1:8080/throttle")
+            $c.on_json = function($m) {
+                global $base
+                if has_key($m, "hello") {
+                    print(["hello", $m["power"]])
+                    $me.send(["power": true])
+                    $me.send(["take": 3])
+                } else if has_key($m, "loco") and $m["loco"]["speed"] == 0 and not $m["loco"]["functions"][0] {
+                    $me.send(["speed": 63])
+                    $me.send(["press": 0])
+                    $me.send(["release": 0])
+                } else if has_key($m, "loco") and $m["loco"]["functions"][0] {
+                    $d = $base.decoder(3)
+                    print([$m["loco"]["speed"], $d["speed"], $d["functions"][0], $base.power])
+                    quit()
+                }
+            }
+            $c.connect()
+        })
+    })
+})
+"#;
+    let Some(printed) = run_example_on_screen_with("browser-sample", "browser_throttle.leah", None, driver, 15000, &[]) else { return };
+    assert!(printed.contains("[200, true]\n[\"hello\", false]\n[63, 63, true, true]\n"), "{printed}");
+}

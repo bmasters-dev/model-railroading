@@ -1,0 +1,306 @@
+` A browser throttle (design/model_railroading.md, "Phase B, item 9"): any phone, tablet, or computer
+` on the Wi-Fi drives the locomotives from its web browser, with nothing to install. This one file
+` is the whole app: the window that starts it, Leah's web server (the web addon), and the page it
+` serves, which talks to Leah over a web socket. Choose the base station (or the simulated one),
+` then Start, and open the address shown in the phone's browser.
+`
+` The page: a locomotive from the roster or by its address, a speed slider, direction, stop, the
+` function keys (labelled from the roster; a momentary one, such as a horn, on while held), the
+` track power, and an emergency stop for every locomotive. A browser that goes away has its
+` locomotive stopped.
+
+$base = null
+$web = null
+$roster = roster()
+` Each browser's locomotive, by its web socket's number, and the locomotives taken, by address.
+$taken = []
+$locos = []
+$next_socket = 0
+$sockets = []
+
+` The page the browsers are given (its own look and code; it speaks JSON to Leah over a web socket).
+$page = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Throttle</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 0; padding: 14px; background: #1d2026; color: #eceff4; }
+h1 { font-size: 20px; margin: 2px 0 10px; }
+.row { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; align-items: center; }
+button, select, input { font-size: 18px; padding: 10px 14px; border-radius: 10px; border: 1px solid #4c566a; background: #2e3440; color: #eceff4; }
+button:active { filter: brightness(1.4); }
+button.on { background: #2f7d32; border-color: #3fa142; }
+#speed { width: 100%; height: 56px; accent-color: #5e81ac; }
+#big { font-size: 44px; font-weight: bold; text-align: center; margin: 4px; }
+#name { text-align: center; color: #a3be8c; min-height: 22px; }
+.fn { min-width: 70px; }
+#estop { background: #bf2a2a; border-color: #e04848; color: white; font-weight: bold; width: 100%; font-size: 22px; margin-top: 14px; }
+#status { color: #81a1c1; font-size: 14px; }
+</style></head><body>
+<h1 id="title">Throttle</h1>
+<div class="row"><select id="roster"><option value="">Roster…</option></select>
+<input id="addr" type="number" min="1" max="10239" placeholder="address" style="width: 120px">
+<button id="take">Take</button></div>
+<div id="name"></div>
+<div id="big">–</div>
+<input id="speed" type="range" min="0" max="126" value="0" disabled>
+<div class="row"><button id="rev">◀ Reverse</button><button id="stop">Stop</button><button id="fwd">Forward ▶</button><button id="power">Track power</button></div>
+<div class="row" id="fns"></div>
+<button id="estop">EMERGENCY STOP (all)</button>
+<p id="status">Connecting…</p>
+<script>
+let ws = null, loco = null, sliding = false;
+const $ = id => document.getElementById(id);
+function send(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/throttle");
+  ws.onopen = () => { $("status").textContent = "Connected"; };
+  ws.onclose = () => { $("status").textContent = "Connection lost: trying again…"; setTimeout(connect, 1500); };
+  ws.onmessage = e => show(JSON.parse(e.data));
+}
+function show(m) {
+  if (m.hello) { $("title").textContent = m.hello; document.title = m.hello; }
+  if (m.roster) { const r = $("roster"); r.length = 1; for (const n of m.roster) r.add(new Option(n, n)); }
+  if ("power" in m) $("power").classList.toggle("on", m.power);
+  if (m.error) $("status").textContent = m.error;
+  if (m.loco) {
+    const first = !loco || loco.address !== m.loco.address;
+    loco = m.loco;
+    $("name").textContent = loco.name;
+    $("speed").disabled = false;
+    if (!sliding) $("speed").value = loco.speed;
+    $("big").textContent = (loco.speed === 0 ? "Stopped" : loco.speed) + (loco.forward ? " ▶" : " ◀");
+    $("fwd").classList.toggle("on", loco.forward);
+    $("rev").classList.toggle("on", !loco.forward);
+    if (first) keys();
+    for (let n = 0; n < loco.functions.length; n++) { const b = $("f" + n); if (b) b.classList.toggle("on", loco.functions[n]); }
+  }
+}
+function keys() {
+  const box = $("fns"); box.innerHTML = "";
+  for (let n = 0; n <= 12; n++) {
+    const b = document.createElement("button");
+    b.id = "f" + n; b.className = "fn";
+    b.textContent = (loco.labels && loco.labels[n]) || ("F" + n);
+    b.onpointerdown = e => { e.preventDefault(); send({ press: n }); };
+    b.onpointerup = () => send({ release: n });
+    b.onpointerleave = () => { if (loco.momentary.includes(n)) send({ release: n }); };
+    box.appendChild(b);
+  }
+}
+$("roster").onchange = () => { if ($("roster").value) send({ take: $("roster").value }); };
+$("take").onclick = () => { const a = parseInt($("addr").value); if (a > 0) send({ take: a }); };
+$("speed").oninput = () => { sliding = true; send({ speed: parseInt($("speed").value) }); };
+$("speed").onchange = () => { sliding = false; };
+$("fwd").onclick = () => send({ forward: true });
+$("rev").onclick = () => send({ forward: false });
+$("stop").onclick = () => send({ stop: true });
+$("power").onclick = () => send({ power: !$("power").classList.contains("on") });
+$("estop").onclick = () => send({ estop: true });
+connect();
+</script></body></html>'
+
+$win = window(title: "Browser throttle", width: 600, height: 420, minimum_width: 560, minimum_height: 380)
+$port_label = label(left: 20, top: 24, width: 110, text: "Base station:")
+$win.add($port_label)
+$port = popup_menu(left: 130, top: 20, width: 300)
+$win.add($port)
+$start = button(left: 444, top: 18, width: 136, height: 34, text: "Start", lock_right: true)
+$win.add($start)
+$state = label(left: 20, top: 70, width: 560, height: 60, multi_line: true, lock_right: true, text: "Not serving", font_size: 16, bold: true)
+$win.add($state)
+$browsers = label(left: 20, top: 140, width: 560, lock_right: true, text: "")
+$win.add($browsers)
+$help = label(left: 20, top: 180, width: 560, height: 200, multi_line: true, lock_right: true, lock_bottom: true, _
+    text: "Open the address above in the web browser of any phone, tablet, or computer on the same Wi-Fi: nothing to install. Choose a locomotive from the roster or type its address, then drive." + end_of_line + end_of_line _
+        + "The browser can't reach the page? The computer's firewall is blocking the port: on Debian and Ubuntu, sudo ufw allow 8080/tcp")
+$win.add($help)
+
+` The addresses a phone on the network can reach this computer by.
+function addresses() {
+    $found = []
+    foreach network_interfaces() as $i {
+        if $i["up"] and not $i["loopback"] {
+            foreach $i["addresses"] as $a {
+                if $a["version"] == 4 {
+                    $found[] = "http://" + $a["address"] + ":8080"
+                }
+            }
+        }
+    }
+    return $found
+}
+
+function show() {
+    global $web, $state, $browsers, $sockets
+    if $web == null {
+        $state.text = "Not serving"
+        $browsers.text = ""
+        return
+    }
+    $where = addresses()
+    $state.text = if count($where) == 0 then "Serving on port 8080 (this computer has no network address yet)" else "Open " + join($where, " or ") + " on the phone"
+    $browsers.text = "Browsers connected: " + count($sockets)
+}
+
+` What a browser is told of its locomotive.
+function loco_state($loco) {
+    $top = if $loco.speed_steps == 128 then 126 else $loco.speed_steps
+    $on = []
+    foreach range(0, 28) as $n {
+        $on[] = $loco.function($n)
+    }
+    $name = if $loco.entry != null then $loco.entry.name else "Locomotive " + $loco.address
+    return ["loco": ["address": $loco.address, "name": $name, "speed": round($loco.speed * 126 / $top), _
+        "forward": $loco.direction == "forward", "functions": $on, "labels": $loco.labels, "momentary": $loco.momentary]]
+}
+
+` A locomotive by its address or roster name, one for every browser taking it.
+function take($what) {
+    global $base, $roster, $taken
+    $key = to_text($what)
+    if has_key($taken, $key) {
+        return $taken[$key]
+    }
+    if is_number($key) {
+        $n = to_number($key)
+        $loco = locomotive($n, long: $n > 127, base: $base)
+    } else {
+        $entry = $roster.entry($key)
+        if $entry == null {
+            return null
+        }
+        $loco = locomotive($entry, base: $base)
+    }
+    ` (A direction first: some decoders keep their headlight off until they have one.)
+    $loco.direction = "forward"
+    $taken[$key] = $loco
+    return $loco
+}
+
+` A browser's message.
+function heard($socket, $m) {
+    global $base, $locos, $sockets
+    $id = $socket.tag
+    $loco = $locos[$id] ?? null
+    try {
+        if has_key($m, "take") {
+            $l = take($m["take"])
+            if $l == null {
+                $socket.send(["error": "There is no locomotive " + to_text($m["take"]) + " in the roster"])
+            } else {
+                $locos[$id] = $l
+                $socket.send(loco_state($l))
+            }
+        } else if has_key($m, "power") {
+            $base.power = $m["power"]
+            tell_all(["power": $base.power])
+        } else if has_key($m, "estop") {
+            $base.emergency_stop()
+        } else if $loco != null {
+            if has_key($m, "speed") {
+                $top = if $loco.speed_steps == 128 then 126 else $loco.speed_steps
+                $loco.speed = keep_between(round($m["speed"] * $top / 126), 0, $top)
+            } else if has_key($m, "forward") {
+                $loco.direction = if $m["forward"] then "forward" else "reverse"
+            } else if has_key($m, "press") {
+                $loco.press_function($m["press"])
+            } else if has_key($m, "release") {
+                $loco.release_function($m["release"])
+            } else if has_key($m, "stop") {
+                $loco.stop()
+            }
+        }
+    } catch $e {
+        $socket.send(["error": $e.message])
+    }
+}
+
+` Something to every browser connected.
+function tell_all($m) {
+    global $sockets
+    foreach $sockets as $s {
+        $s.send($m)
+    }
+}
+
+` A browser gone: its locomotive stopped, eased by its decoder.
+function gone($socket) {
+    global $locos, $sockets
+    $id = $socket.tag
+    $loco = $locos[$id] ?? null
+    if $loco != null {
+        $loco.stop()
+    }
+    $sockets = filter($sockets, fn($s) => $s.tag != $id)
+    show()
+}
+
+$start.on_click = function() {
+    global $base, $web, $port, $start, $state, $sockets
+    if $web != null {
+        $web.stop()
+        $web = null
+        $base.close()
+        $base = null
+        $sockets = []
+        $start.text = "Start"
+        $port.enabled = true
+        show()
+        return
+    }
+    try {
+        $base = if $port.selected_row_tag == "simulate" then dcc_base(simulate: true) else dcc_base($port.selected_row_tag)
+    } catch $e {
+        $state.text = $e.message
+        return
+    }
+    $web = http_server(port: 8080)
+    $web.on_request = function($request) {
+        global $page
+        return $page
+    }
+    $web.on_web_socket = function($socket) {
+        global $next_socket, $sockets, $roster, $base
+        $next_socket++
+        $socket.tag = $next_socket
+        $sockets[] = $socket
+        $socket.on_json = function($m) {
+            heard($me, $m)
+        }
+        $socket.on_closed = function($code, $reason) {
+            gone($me)
+        }
+        $socket.send(["hello": "Leah's throttle", "roster": $roster.names, "power": $base.power])
+        show()
+    }
+    $web.on_error = function($message, $kind) {
+        global $state
+        $state.text = if $kind == "in_use" then "Port 8080 is in use by another program" else $message
+    }
+    $web.start()
+    ` (Every browser told what changed, whoever changed it: another browser, a phone, the script.)
+    $base.on_locomotive_changed = function($loco) {
+        global $locos, $sockets
+        foreach $sockets as $s {
+            $mine = $locos[$s.tag] ?? null
+            if $mine != null and $mine.address == $loco.address and $mine.long == $loco.long {
+                $s.send(loco_state($loco))
+            }
+        }
+    }
+    $start.text = "Stop"
+    $port.enabled = false
+    show()
+}
+
+$port.add_row("Simulated (no board)", tag: "simulate")
+foreach dcc_ports() as $p {
+    $port.add_row($p["port"] + ": " + $p["name"], tag: $p["port"])
+    if starts_with($p["name"], "Arduino Mega") {
+        $port.selected_row_index = $port.row_count - 1
+    }
+}
+if $port.selected_row_index < 0 {
+    $port.selected_row_index = 0
+}
+show()
+$win.show()
