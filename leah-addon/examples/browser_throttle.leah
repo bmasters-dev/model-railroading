@@ -254,7 +254,8 @@ $start.on_click = function() {
         return
     }
     ` (Reachable from the network, not only from this computer: Leah's web server is local by default.)
-    $web = http_server(port: 8080, local_only: false)
+    ` (Tests: a free port of their own, never one a running throttle has.)
+    $web = http_server(port: if environment_variable("LEAH_TEST_PHONE_SERVER", default: "") != "" then 0 else 8080, local_only: false)
     $web.on_request = function($request) {
         global $page
         return $page

@@ -2245,13 +2245,15 @@ fn the_browser_throttle_serves_its_page_and_drives_from_a_web_socket() {
     global $start
     $start.click()
     call_later(500, function() {
+        global $web
+        $at = replace($web.address, "0.0.0.0", "127.0.0.1")
         run_in_background(work: function() {
-            return http_get("http://127.0.0.1:8080/")
+            return http_get($at + "/")
         }, done: function($answer) {
             global $c
             global $web
             print([$answer["status"], contains($answer["body"], "EMERGENCY STOP"), $web.local_only])
-            $c = web_socket(address: "ws://127.0.0.1:8080/throttle")
+            $c = web_socket(address: replace(replace($web.address, "0.0.0.0", "127.0.0.1"), "http://", "ws://") + "/throttle")
             $c.on_json = function($m) {
                 global $base
                 if has_key($m, "hello") {
@@ -2273,6 +2275,6 @@ fn the_browser_throttle_serves_its_page_and_drives_from_a_web_socket() {
     })
 })
 "#;
-    let Some(printed) = run_example_on_screen_with("browser-sample", "browser_throttle.leah", None, driver, 15000, &[]) else { return };
+    let Some(printed) = run_example_on_screen_with("browser-sample", "browser_throttle.leah", None, driver, 15000, &[("LEAH_TEST_PHONE_SERVER", "1")]) else { return };
     assert!(printed.contains("[200, true, false]\n[\"hello\", false]\n[63, 63, true, true]\n"), "{printed}");
 }
