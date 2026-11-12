@@ -38,4 +38,5 @@ mkdir -p "$addons"
 cp "$here/target/debug/libleah_addon_model_railroading.so" "$addons/model_railroading.so"
 echo "bench: $(basename "$script") with $("$leah" --version | head -1) and the addon as built" >&2
 cd "$(dirname "$script")"
-exec env LEAH_3RD_PARTY_ADDONS="$addons" LEAH_USER_ADDONS="" LEAH_APP_FOLDER="$app_folder" "$leah" "$script" "$@"
+# (LEAH_PHONE_LOG: what each phone and the phone server say, on this terminal.)
+exec env LEAH_3RD_PARTY_ADDONS="$addons" LEAH_USER_ADDONS="" LEAH_APP_FOLDER="$app_folder" LEAH_PHONE_LOG=1 "$leah" "$script" "$@"

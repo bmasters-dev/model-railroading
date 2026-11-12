@@ -86,6 +86,9 @@ fn rate_words(rate: f64) -> String {
 impl Shared {
     /// A line to one phone, queued for its writing thread.
     fn send(&self, id: u64, line: &str) {
+        if logging() {
+            eprintln!("phone {id} <  {line}");
+        }
         if let Some(w) = self.writers.lock().unwrap_or_else(|e| e.into_inner()).get(&id) {
             let _ = w.send(format!("{line}\n"));
         }
@@ -410,6 +413,13 @@ pub(crate) fn power_changed(base: &DccBase, on: bool) {
     }
 }
 
+/// Whether each phone's lines and the server's answers are said on the error output
+/// (`LEAH_PHONE_LOG`: tools/bench.sh sets it, to see what a phone and the server say).
+fn logging() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("LEAH_PHONE_LOG").is_some_and(|v| !v.is_empty()))
+}
+
 /// A locomotive on this base station changed (its speed, direction, or a function): every phone
 /// holding it is told what changed (base.rs's `changed`).
 pub(crate) fn locomotive_changed(base: &DccBase, loco: &Rc<Locomotive>) {
@@ -549,6 +559,9 @@ impl PhoneServer {
     }
 
     fn line(&self, id: u64, line: &str, call: &mut Call) {
+        if logging() {
+            eprintln!("phone {id}  > {line}");
+        }
         if !self.clients.borrow().contains_key(&id) {
             return;
         }
