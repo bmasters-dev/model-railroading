@@ -40,7 +40,8 @@ $win.add($t2)
 $clock = checkbox(left: 330, top: 260, width: 270, text: "Fast clock: 6:00 at four times", lock_right: true, enabled: false)
 $win.add($clock)
 $help = label(left: 20, top: 384, width: 580, height: 70, multi_line: true, lock_right: true, lock_top: false, lock_bottom: true, _
-    text: "On the phone: open the throttle app, choose this server by its name (or type this computer's address and the port shown above), then take a locomotive by its address or from the roster.")
+    text: "On the phone: open the throttle app, choose this server by its name (or type this computer's address and the port shown above), then take a locomotive by its address or from the roster." + end_of_line _
+        + "The phone finds the server but can't connect? The computer's firewall is blocking the port: on Debian and Ubuntu, sudo ufw allow 12090/tcp")
 $win.add($help)
 
 function show() {
