@@ -2183,3 +2183,56 @@ print($server.port)
     let (ok, err) = run.end();
     assert!(ok, "{err}");
 }
+
+#[test]
+fn a_phone_makes_drives_and_breaks_up_an_advanced_consist() {
+    let script = r#"
+$base = dcc_base(simulate: true)
+$base.power = true
+$server = phone_throttle_server(port: 0, announce: false)
+$server.add_turnout("T1")
+$server.on_turnout_request = function($name, $state) {
+    global $base
+    $a = $base.decoder(3)
+    $b = $base.decoder(5)
+    print([$a["cvs"][19] ?? 0, $b["cvs"][19] ?? 0, $a["speed"], $a["direction"], $b["direction"]])
+}
+$server.on_client_left = function($name) {
+    global $server
+    $server.close()
+}
+print($server.port)
+"#;
+    let run = Running::start("phone_consist", script);
+    let port: u16 = run.next().trim().parse().expect("the server's port printed");
+    let mut phone = Phone::connect(port);
+    assert!(phone.listen().contains(&"RCC0".to_string()), "no consists at first");
+    phone.say("NP");
+    phone.listen();
+    // (Two locomotives into consist 74, the second back to back with the first: every phone told.)
+    phone.say("RC+<;>S74<;>Double<:>S3<;>true");
+    phone.listen();
+    phone.say("RC+<;>S74<;>Double<:>S5<;>false");
+    let told = phone.listen();
+    assert!(told.contains(&"RCC1".to_string()), "{told:?}");
+    assert!(told.contains(&"RCD}|{74(S)}|{Double]\\[3(S)}|{true]\\[5(S)}|{false".to_string()), "{told:?}");
+    // (Driven at the consist address: both decoders follow it, the second the other way.)
+    phone.say("M0+S74<;>S74");
+    phone.listen();
+    phone.say("M0AS74<;>V40");
+    phone.say("PTATT1");
+    phone.listen();
+    assert_eq!(run.next(), "[74, 202, 40, \"forward\", \"reverse\"]");
+    // (Broken up: each decoder told it is in no consist, the list empty again.)
+    phone.say("RCR<;>S74");
+    assert!(phone.listen().contains(&"RCC0".to_string()));
+    phone.say("PTACT1");
+    phone.listen();
+    assert!(run.next().starts_with("[0, 0, 0,"), "out of the consist, stopped");
+    // (A long consist address: refused, said.)
+    phone.say("RC+<;>L1000<;>Big<:>S3<;>true");
+    assert!(phone.listen().iter().any(|l| l.starts_with("HMLeah: L1000 isn't a consist address")));
+    phone.say("Q");
+    let (ok, err) = run.end();
+    assert!(ok, "{err}");
+}

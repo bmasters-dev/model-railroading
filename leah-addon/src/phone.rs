@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use leah_addon_kit::{Call, Error, Events, Object, Value};
 
 use crate::base::{describe, make_locomotive, DccBase, Locomotive};
+use crate::consist::Consist;
 use crate::dcc;
 use crate::roster::Roster;
 
@@ -169,6 +170,8 @@ pub struct PhoneServer {
     /// The locomotives phones made (no locomotive of the script's at their addresses), kept while the
     /// server serves: one let go of runs on as it was, and is the same one when taken again.
     made: RefCell<BTreeMap<(u16, bool), Rc<Locomotive>>>,
+    /// The advanced consists phones made, by their consist addresses (`RC` commands).
+    consists: RefCell<BTreeMap<u8, Rc<Consist>>>,
     announcer: RefCell<Option<mdns_sd::ServiceDaemon>>,
 }
 
@@ -263,6 +266,7 @@ pub fn new_server(call: &mut Call) -> Result<Value, Error> {
             routes: RefCell::new(Vec::new()),
             origin: Cell::new(None),
             made: RefCell::new(BTreeMap::new()),
+            consists: RefCell::new(BTreeMap::new()),
             announcer: RefCell::new(announcer),
         }
     });
@@ -511,7 +515,7 @@ impl PhoneServer {
         let mut lines = vec!["VN2.0".to_string(), self.roster_line(), self.power_line(call)];
         lines.extend(self.turnout_lines());
         lines.extend(self.route_lines());
-        lines.push("RCC0".to_string());
+        lines.extend(self.consist_lines());
         lines.push(format!("*{}", self.shared.heartbeat.load(Ordering::SeqCst)));
         lines.push("HTLeah".to_string());
         lines.push(format!("Ht{}", self.name));
@@ -580,6 +584,7 @@ impl PhoneServer {
                 self.shared.hang_up(id);
             }
             Some(b'P') => self.panel(id, line, call),
+            Some(b'R') if line.starts_with("RC") => self.consist_command(id, line, call),
             Some(b'M') => self.throttle(id, line, call),
             // (Anything else, as the protocol asks, is left alone.)
             _ => {}
@@ -683,27 +688,7 @@ impl PhoneServer {
                 }
             }
         };
-        // (The script's own at that address when it has one; else the one a phone made before.)
-        let existing = self.base.live_locomotives().into_iter().find(|l| l.address() == address && l.is_long() == long).or_else(|| self.made.borrow().get(&(address, long)).cloned());
-        let loco = match existing {
-            Some(l) => l,
-            None => {
-                // (As locomotive() makes one: from its roster entry when there is one.)
-                let data = entry.as_ref().and_then(|e| e.data().ok()).or_else(|| self.roster.as_ref().and_then(|r| r.entries_now().into_iter().find(|e| e.address == address && e.long == long)));
-                let made = crate::base::from_entry(data.as_ref(), None);
-                let entry = entry.or_else(|| {
-                    let name = data.as_ref()?.name.clone();
-                    self.roster.as_ref()?.entry_named(&name, call)
-                });
-                match make_locomotive(call, &self.base, address, long, made.steps, made.speed_limit, made.momentary, made.labels, entry).1 {
-                    Some(l) => {
-                        self.made.borrow_mut().insert((address, long), l.clone());
-                        l
-                    }
-                    None => return,
-                }
-            }
-        };
+        let Some(loco) = self.locomotive_at(address, long, entry, call) else { return };
         let key = if key.is_empty() { key_of(&loco) } else { key.to_string() };
         let told = told_now(&loco);
         if let Some(c) = self.clients.borrow_mut().get_mut(&id) {
@@ -723,6 +708,129 @@ impl PhoneServer {
         self.send(id, &format!("M{throttle}A{key}{SPLIT}V{}", told.speed));
         self.send(id, &format!("M{throttle}A{key}{SPLIT}R{}", u8::from(told.forward)));
         self.send(id, &format!("M{throttle}A{key}{SPLIT}s{}", steps_word(loco.steps())));
+    }
+
+    /// The locomotive at an address: the script's own when it has one, else the one a phone made
+    /// before, else one made now (from its roster entry when there is one) and kept.
+    fn locomotive_at(&self, address: u16, long: bool, entry: Option<Rc<crate::roster::RosterEntry>>, call: &mut Call) -> Option<Rc<Locomotive>> {
+        let existing = self.base.live_locomotives().into_iter().find(|l| l.address() == address && l.is_long() == long).or_else(|| self.made.borrow().get(&(address, long)).cloned());
+        if existing.is_some() {
+            return existing;
+        }
+        // (As locomotive() makes one: from its roster entry when there is one.)
+        let data = entry.as_ref().and_then(|e| e.data().ok()).or_else(|| self.roster.as_ref().and_then(|r| r.entries_now().into_iter().find(|e| e.address == address && e.long == long)));
+        let made = crate::base::from_entry(data.as_ref(), None);
+        let entry = entry.or_else(|| {
+            let name = data.as_ref()?.name.clone();
+            self.roster.as_ref()?.entry_named(&name, call)
+        });
+        let loco = make_locomotive(call, &self.base, address, long, made.steps, made.speed_limit, made.momentary, made.labels, entry).1?;
+        self.made.borrow_mut().insert((address, long), loco.clone());
+        Some(loco)
+    }
+
+    /// The consists phones made, as the protocol lists them: their count, then one line each, its
+    /// address, its name, and each member's address and facing (`true` the consist's way).
+    fn consist_lines(&self) -> Vec<String> {
+        let consists = self.consists.borrow();
+        let mut lines = vec![format!("RCC{}", consists.len())];
+        for (address, c) in consists.iter() {
+            let mut line = format!("RCD{PARTS}{address}(S){PARTS}{}", plain(c.name()));
+            for (m, reversed) in c.members_now() {
+                line.push_str(&format!("{ITEMS}{}({}){PARTS}{}", m.address(), if m.is_long() { 'L' } else { 'S' }, !reversed));
+            }
+            lines.push(line);
+        }
+        lines
+    }
+
+    fn tell_consists(&self) {
+        for l in self.consist_lines() {
+            self.shared.send_all(&l);
+        }
+    }
+
+    /// The phones' advanced (decoder-assisted) consists: each member's decoder told the consist
+    /// address (its CV 19), as Leah's `consist(address: ...)` does. `RC+` makes one or adds to it (or
+    /// turns a member round), `RC-` takes one out, `RCR` breaks it up, `RCP` puts its members in
+    /// order. A phone then drives it by taking the consist address as a locomotive.
+    fn consist_command(&self, id: u64, line: &str, call: &mut Call) {
+        let (head, rest) = line.split_once(SPLIT).unwrap_or((line, ""));
+        let (left, right) = rest.split_once("<:>").unwrap_or((rest, ""));
+        let (consist_part, name) = left.split_once(SPLIT).unwrap_or((left, ""));
+        let Some((address, false)) = address_in(consist_part.trim()) else {
+            self.alert(id, &format!("Leah: {} isn't a consist address (S1 to S127: a decoder keeps it in seven bits of its CV 19)", consist_part.trim()));
+            return;
+        };
+        let address = address as u8;
+        let what = "the phone's consist";
+        let result = match head {
+            "RC+" => {
+                let (loco_part, facing) = right.split_once(SPLIT).unwrap_or((right, "true"));
+                match address_in(loco_part.trim()) {
+                    None => Err(Error::range_error(format!("{} isn't a locomotive's address", loco_part.trim()))),
+                    Some((a, l)) => self.add_to_consist(address, name.trim(), a, l, facing.trim() != "true", what, call),
+                }
+            }
+            "RC-" => match address_in(right.trim()) {
+                None => Err(Error::range_error(format!("{} isn't a locomotive's address", right.trim()))),
+                Some((a, l)) => {
+                    let found = self.consists.borrow().get(&address).cloned();
+                    match found {
+                        None => Err(Error::range_error(format!("there is no consist {address}"))),
+                        Some(c) => match c.members_now().into_iter().find(|(m, _)| m.address() == a && m.is_long() == l) {
+                            None => Err(Error::range_error(format!("locomotive {a} isn't in consist {address}"))),
+                            Some((m, _)) => c.remove_member(&m, what, call),
+                        },
+                    }
+                }
+            },
+            "RCR" => {
+                let gone = self.consists.borrow_mut().remove(&address);
+                match gone {
+                    None => Err(Error::range_error(format!("there is no consist {address}"))),
+                    Some(c) => c.break_up_all(call),
+                }
+            }
+            "RCP" => {
+                let order: Vec<(u16, bool)> = right.split(SPLIT).filter_map(|p| address_in(p.trim())).collect();
+                match self.consists.borrow().get(&address) {
+                    None => Err(Error::range_error(format!("there is no consist {address}"))),
+                    Some(c) => {
+                        c.reorder(&order);
+                        Ok(())
+                    }
+                }
+            }
+            _ => return,
+        };
+        if let Err(e) = result {
+            self.alert(id, &format!("Leah: {}", e.message));
+        }
+        self.tell_consists();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_to_consist(&self, address: u8, name: &str, loco_address: u16, long: bool, reversed: bool, what: &str, call: &mut Call) -> Result<(), Error> {
+        let existing = self.consists.borrow().get(&address).cloned();
+        let consist = match existing {
+            Some(c) => c,
+            None => {
+                let name = if name.is_empty() { address.to_string() } else { name.to_string() };
+                let made = Consist::make(&self.base, name, Some(address), call).1.ok_or_else(|| Error::new("programming_error", "the consist wasn't made"))?;
+                self.consists.borrow_mut().insert(address, made.clone());
+                made
+            }
+        };
+        let loco = self.locomotive_at(loco_address, long, None, call).ok_or_else(|| Error::new("programming_error", "the locomotive wasn't made"))?;
+        // (One in it already, facing the other way: taken out and added again, turned round.)
+        if let Some((_, was)) = consist.members_now().into_iter().find(|(m, _)| Rc::ptr_eq(m, &loco)) {
+            if was == reversed {
+                return Ok(());
+            }
+            consist.remove_member(&loco, what, call)?;
+        }
+        consist.add_member(loco, reversed, what, call)
     }
 
     /// Locomotives let go of (one, or `*` all on the throttle): they run on as they were.

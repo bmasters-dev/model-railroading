@@ -48,15 +48,99 @@ pub fn new_consist(call: &mut Call) -> Result<Value, Error> {
             _ => return Err(Error::range_error(format!("consist()'s `address:` is a consist address, 1 to 127 (a decoder keeps it in CV 19), not {}", describe(v))).at(call.option_line("address"))),
         },
     };
-    // (The consist address's speed sent as a locomotive's: 128 steps, kept repeating on a board.)
-    let carrier = match address {
-        Some(a) => make_locomotive(call, &base, u16::from(a), false, 128, 126, Default::default(), Default::default(), None).1,
-        None => None,
-    };
-    Ok(call.new_object(Consist { base, name, address, carrier, members: RefCell::new(Vec::new()), speed: Cell::new(0), forward: Cell::new(true) }))
+    Ok(Consist::make(&base, name, address, call).0)
 }
 
 impl Consist {
+    /// A consist made on a base station (`consist()`, and the phone throttle server's): its value and
+    /// the object.
+    pub(crate) fn make(base: &Rc<DccBase>, name: String, address: Option<u8>, call: &mut Call) -> (Value, Option<Rc<Consist>>) {
+        // (The consist address's speed sent as a locomotive's: 128 steps, kept repeating on a board.)
+        let carrier = match address {
+            Some(a) => make_locomotive(call, base, u16::from(a), false, 128, 126, Default::default(), Default::default(), None).1,
+            None => None,
+        };
+        let value = call.new_object(Consist { base: base.clone(), name, address, carrier, members: RefCell::new(Vec::new()), speed: Cell::new(0), forward: Cell::new(true) });
+        let made = call.own_value::<Consist>(&value);
+        (value, made)
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Its members, the lead first, each with whether it runs reversed.
+    pub(crate) fn members_now(&self) -> Vec<(Rc<Locomotive>, bool)> {
+        self.members.borrow().clone()
+    }
+
+    /// A locomotive added at the end (consist.add()).
+    pub(crate) fn add_member(&self, loco: Rc<Locomotive>, reversed: bool, what: &str, call: &mut Call) -> Result<(), Error> {
+        if !Rc::ptr_eq(loco.base(), &self.base) {
+            return Err(Error::type_error(format!("{what}: the locomotive runs on another base station")));
+        }
+        if self.position(&loco).is_some() {
+            return Err(Error::range_error(format!("{what}: locomotive {} is in this consist already", loco.address())));
+        }
+        if self.address.is_some_and(|a| !loco.is_long() && loco.address() == u16::from(a)) {
+            return Err(Error::range_error(format!("{what}: locomotive {} has the consist's own address", loco.address())));
+        }
+        // (Stopped at its own address first: what repeats there must not start it later.)
+        loco.halt(false, call)?;
+        if let Some(a) = self.address {
+            self.tell(&loco, a, reversed, call)?;
+        }
+        self.members.borrow_mut().push((loco.clone(), reversed));
+        // (A software consist's new member takes the consist's speed and direction at once.)
+        if self.carrier.is_none() && self.speed.get() > 0 {
+            loco.drive(self.speed.get(), self.forward.get() != reversed, call)?;
+        }
+        Ok(())
+    }
+
+    /// A member taken out, stopped (consist.remove()).
+    pub(crate) fn remove_member(&self, loco: &Rc<Locomotive>, what: &str, call: &mut Call) -> Result<(), Error> {
+        let Some(i) = self.position(loco) else {
+            return Err(Error::range_error(format!("{what}: locomotive {} isn't in this consist", loco.address())));
+        };
+        self.members.borrow_mut().remove(i);
+        loco.halt(false, call)?;
+        if self.address.is_some() {
+            self.tell(loco, 0, false, call)?;
+        }
+        Ok(())
+    }
+
+    /// Every member taken out, the train stopped (consist.break_up()).
+    pub(crate) fn break_up_all(&self, call: &mut Call) -> Result<(), Error> {
+        self.speed.set(0);
+        if let Some(c) = &self.carrier {
+            c.halt(false, call)?;
+        }
+        let members = std::mem::take(&mut *self.members.borrow_mut());
+        for (m, _) in members {
+            m.halt(false, call)?;
+            if self.address.is_some() {
+                self.tell(&m, 0, false, call)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Its members put in this order (each by its address and whether it is long); any not named
+    /// keep their places after them.
+    pub(crate) fn reorder(&self, order: &[(u16, bool)]) {
+        let mut members = self.members.borrow_mut();
+        let mut sorted: Vec<(Rc<Locomotive>, bool)> = Vec::new();
+        for (a, l) in order {
+            if let Some(i) = members.iter().position(|(m, _)| m.address() == *a && m.is_long() == *l) {
+                sorted.push(members.remove(i));
+            }
+        }
+        sorted.append(&mut members);
+        *members = sorted;
+    }
+
     fn position(&self, loco: &Rc<Locomotive>) -> Option<usize> {
         self.members.borrow().iter().position(|(m, _)| Rc::ptr_eq(m, loco))
     }
@@ -142,39 +226,14 @@ impl Object for Consist {
                     Some(Value::Bool(b)) => *b,
                     Some(other) => return Err(Error::type_error(format!("{what}'s `reversed:` is true or false, not {}", describe(other))).at(call.option_line("reversed"))),
                 };
-                if !Rc::ptr_eq(loco.base(), &self.base) {
-                    return Err(Error::type_error(format!("{what}: the locomotive runs on another base station")));
-                }
-                if self.position(&loco).is_some() {
-                    return Err(Error::range_error(format!("{what}: locomotive {} is in this consist already", loco.address())));
-                }
-                if self.address.is_some_and(|a| !loco.is_long() && loco.address() == u16::from(a)) {
-                    return Err(Error::range_error(format!("{what}: locomotive {} has the consist's own address", loco.address())));
-                }
-                // (Stopped at its own address first: what repeats there must not start it later.)
-                loco.halt(false, call)?;
-                if let Some(a) = self.address {
-                    self.tell(&loco, a, reversed, call)?;
-                }
-                self.members.borrow_mut().push((loco.clone(), reversed));
-                // (A software consist's new member takes the consist's speed and direction at once.)
-                if self.carrier.is_none() && self.speed.get() > 0 {
-                    loco.drive(self.speed.get(), self.forward.get() != reversed, call)?;
-                }
+                self.add_member(loco, reversed, &what, call)?;
                 Ok(Value::Null)
             }
             "remove" => {
                 call.count_between(1, 1)?;
                 call.only_options(&[])?;
                 let loco = self.member_arg(call, 0, &what)?;
-                let Some(i) = self.position(&loco) else {
-                    return Err(Error::range_error(format!("{what}: locomotive {} isn't in this consist", loco.address())));
-                };
-                self.members.borrow_mut().remove(i);
-                loco.halt(false, call)?;
-                if self.address.is_some() {
-                    self.tell(&loco, 0, false, call)?;
-                }
+                self.remove_member(&loco, &what, call)?;
                 Ok(Value::Null)
             }
             "is_reversed" => {
@@ -234,17 +293,7 @@ impl Object for Consist {
             "break_up" => {
                 call.count_between(0, 0)?;
                 call.only_options(&[])?;
-                self.speed.set(0);
-                if let Some(c) = &self.carrier {
-                    c.halt(false, call)?;
-                }
-                let members = std::mem::take(&mut *self.members.borrow_mut());
-                for (m, _) in members {
-                    m.halt(false, call)?;
-                    if self.address.is_some() {
-                        self.tell(&m, 0, false, call)?;
-                    }
-                }
+                self.break_up_all(call)?;
                 Ok(Value::Null)
             }
             other => Err(call.unknown_function("consist", other, FUNCS)),
