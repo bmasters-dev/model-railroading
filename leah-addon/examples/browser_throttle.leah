@@ -253,7 +253,8 @@ $start.on_click = function() {
         $state.text = $e.message
         return
     }
-    $web = http_server(port: 8080)
+    ` (Reachable from the network, not only from this computer: Leah's web server is local by default.)
+    $web = http_server(port: 8080, local_only: false)
     $web.on_request = function($request) {
         global $page
         return $page

@@ -2249,7 +2249,8 @@ fn the_browser_throttle_serves_its_page_and_drives_from_a_web_socket() {
             return http_get("http://127.0.0.1:8080/")
         }, done: function($answer) {
             global $c
-            print([$answer["status"], contains($answer["body"], "EMERGENCY STOP")])
+            global $web
+            print([$answer["status"], contains($answer["body"], "EMERGENCY STOP"), $web.local_only])
             $c = web_socket(address: "ws://127.0.0.1:8080/throttle")
             $c.on_json = function($m) {
                 global $base
@@ -2273,5 +2274,5 @@ fn the_browser_throttle_serves_its_page_and_drives_from_a_web_socket() {
 })
 "#;
     let Some(printed) = run_example_on_screen_with("browser-sample", "browser_throttle.leah", None, driver, 15000, &[]) else { return };
-    assert!(printed.contains("[200, true]\n[\"hello\", false]\n[63, 63, true, true]\n"), "{printed}");
+    assert!(printed.contains("[200, true, false]\n[\"hello\", false]\n[63, 63, true, true]\n"), "{printed}");
 }
