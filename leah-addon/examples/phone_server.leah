@@ -3,7 +3,8 @@
 ` your base station over the Wi-Fi. Choose the base station (or the simulated one), then Start: the
 ` phones on the same network list this server by its name. Each phone takes a locomotive by its
 ` address or from the roster (its keys labelled as the roster says), and can throw the two
-` turnouts here; the fast clock shows on the phones. A phone that goes quiet (its battery flat, the
+` turnouts here (accessory decoder outputs 1 and 2, such as an NCE Switch8's); the fast clock shows on
+` the phones. A phone that goes quiet (its battery flat, the
 ` Wi-Fi lost) has its locomotives stopped.
 
 $base = null
@@ -99,8 +100,9 @@ $start.on_click = function() {
         }
         return
     }
-    $server.add_turnout("T1", label: "Yard lead")
-    $server.add_turnout("T2", label: "Main crossover")
+    ` (Real turnouts: accessory decoder outputs 1 and 2, such as an NCE Switch8's first two.)
+    $server.add_turnout(turnout(1, name: "T1", base: $base), label: "Yard lead")
+    $server.add_turnout(turnout(2, name: "T2", base: $base), label: "Main crossover")
     $server.on_client = function($who) {
         show()
     }
@@ -108,7 +110,7 @@ $start.on_click = function() {
         show()
     }
     $server.on_turnout_request = function($which, $how) {
-        ` (Here a real turnout would be thrown: an accessory decoder, a servo, a relay.)
+        ` (The real turnout has moved already: the window shows it.)
         show()
     }
     ` (Phones taking and letting go of locomotives, and their speed, change the list's counts.)
@@ -129,7 +131,8 @@ function flip($which) {
     global $server
     foreach $server.turnouts as $t {
         if $t["name"] == $which {
-            $server.set_turnout($which, if $t["state"] == "closed" then "thrown" else "closed")
+            ` (Thrown unless it is thrown already: one not yet moved, "unknown", is thrown.)
+            $server.set_turnout($which, if $t["state"] == "thrown" then "closed" else "thrown")
         }
     }
     show()

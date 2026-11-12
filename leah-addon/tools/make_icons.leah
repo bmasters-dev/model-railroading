@@ -99,6 +99,12 @@ $icons["phone_throttle_server"] = function() {
     ic.arc(10, 8, 2.5, -50, 50, ic.green, 1.2)
     ic.arc(10, 8, 5, -50, 50, ic.green, 1.2)
 }
+` A turnout: the straight route and the diverging one leaving it, the points at the split.
+$icons["turnout"] = function() {
+    ic.stroke([[1, 13], [15, 13]], ic.edge, 2)
+    ic.stroke([[5, 13], [10, 9], [15, 4]], ic.accent, 2)
+    ic.fill(4, 11.5, 2.5, 3, ic.green)
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)

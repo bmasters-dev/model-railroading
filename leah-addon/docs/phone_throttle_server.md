@@ -54,7 +54,7 @@ Starting it needs Leah 0.1.0-alpha.50 or later; an older Leah says so (an `api_e
 | Name | Parameters | Returns |
 |---|---|---|
 | [add_route](#add_route) | name as text, label: text | |
-| [add_turnout](#add_turnout) | name as text, label: text, state: text | |
+| [add_turnout](#add_turnout) | name as text or a turnout, label: text, state: text | |
 | [close](#close) | | |
 | [message](#message) | text, alert: boolean | |
 | [remove_route](#remove_route) | name as text | |
@@ -165,9 +165,15 @@ Adds a route the phones can set: `name` is how they ask for it, `label` what the
 
 ### add_turnout
 
+**add_turnout**(turnout, label: its name)
+
 **add_turnout**(name, label: name, state: "closed")
 
-Adds a turnout the phones can throw: `name` is how they ask for it (`"T1"`), `label` what they show (`"Yard lead"`), `state` `"closed"`, `"thrown"`, or `"unknown"`. The phones connected are told. A name it has already is a `range_error`.
+Adds a turnout the phones can throw. Given a [turnout](ref:turnout), the phones move the real one, by its name, and every move of it (by the script, a phone, or another server) shows on every phone. Given a name, `"T1"`, the phones ask for it by that name, and the script moves the real one itself in [on_turnout_request](#on_turnout_request): its `state` `"closed"`, `"thrown"`, or `"unknown"`. `label` is what the phones show (`"Yard lead"`). The phones connected are told. A name it has already is a `range_error`.
+
+```leah check
+$server.add_turnout(turnout(12, name: "T12"), label: "Yard lead")
+```
 
 ---
 

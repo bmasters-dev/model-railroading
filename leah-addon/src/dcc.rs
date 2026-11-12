@@ -26,6 +26,23 @@ pub fn address_bytes(address: u16, long: bool) -> Vec<u8> {
     if long { vec![0xC0 | (address >> 8) as u8, (address & 0xFF) as u8] } else { vec![address as u8] }
 }
 
+/// The highest accessory output address (511 decoders of four output pairs each).
+pub const ACCESSORY_MOST: u16 = 2044;
+
+/// A basic accessory packet (S-9.2.1 2.4.1: `10AAAAAA 1AAACDDD`) to one output of a turnout's decoder,
+/// by its output address 1 to 2044 as throttles and command stations number them: decoder address
+/// (address - 1) / 4 + 1, the pair (address - 1) % 4. `closed` picks the pair's output D = 1 (the
+/// straight route), else D = 0 (thrown, the diverging route), as RCN-213 numbers them; `on` is C,
+/// the output switched on (off: the coil let go).
+pub fn accessory(address: u16, closed: bool, on: bool) -> Vec<u8> {
+    let decoder = (address - 1) / 4 + 1;
+    let pair = ((address - 1) % 4) as u8;
+    let first = 0x80 | (decoder & 0x3F) as u8;
+    // (The address's upper three bits are sent ones-complemented.)
+    let second = 0x80 | ((!(decoder >> 6) as u8 & 0x07) << 4) | (u8::from(on) << 3) | (pair << 1) | u8::from(closed);
+    packet(&[first, second])
+}
+
 /// The 128-step speed and direction (`0x3F`, then `DSSSSSSS`): 0 stop, 1 emergency stop, 2 to 127
 /// the steps 1 to 126.
 pub fn speed_128(address: u16, long: bool, speed: u8, forward: bool, emergency: bool) -> Vec<u8> {
@@ -244,7 +261,10 @@ pub enum Target {
     Broadcast,
     Idle,
     Locomotive(u16, bool),
-    /// An address this decoder doesn't take (accessory decoders, ...).
+    /// A basic accessory packet: its output address (1 to 2044), whether to the closed (straight)
+    /// output, and whether switched on.
+    Accessory(u16, bool, bool),
+    /// An address this decoder doesn't take (extended accessory decoders, ...).
     Other,
 }
 
@@ -255,6 +275,17 @@ pub fn target(data: &[u8]) -> (Target, &[u8]) {
         Some(0xFF) => (Target::Idle, &data[1..]),
         Some(&a @ 1..=127) => (Target::Locomotive(u16::from(a), false), &data[1..]),
         Some(&a @ 0xC0..=0xE7) if data.len() >= 2 => (Target::Locomotive((u16::from(a & 0x3F) << 8) | u16::from(data[1]), true), &data[2..]),
+        // (Basic accessory: `10AAAAAA 1AAACDDD`, the upper address bits ones-complemented.)
+        Some(&a @ 0x80..=0xBF) if data.len() == 2 && data[1] & 0x80 != 0 => {
+            let b = data[1];
+            let decoder = u16::from(a & 0x3F) | (u16::from(!b >> 4 & 0x07) << 6);
+            let output = decoder.saturating_sub(1) * 4 + u16::from(b >> 1 & 0x03) + 1;
+            if decoder == 0 {
+                (Target::Other, data)
+            } else {
+                (Target::Accessory(output, b & 1 == 1, b & 0x08 != 0), &data[2..])
+            }
+        }
         _ => (Target::Other, data),
     }
 }
@@ -463,6 +494,18 @@ fn on_words(state: &DecoderState, first: usize, last: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accessory_packets_are_the_nmras_and_read_back() {
+        // (Output address 1: decoder 1, pair 0. Its upper bits all ones once complemented: 0x70.)
+        assert_eq!(accessory(1, true, true), vec![0x81, 0xF9, 0x78]);
+        assert_eq!(accessory(1, false, true), vec![0x81, 0xF8, 0x79]);
+        for (address, closed) in [(1, true), (4, false), (5, true), (257, false), (2044, true)] {
+            let p = accessory(address, closed, true);
+            assert!(matches!(target(&p[..2]), (Target::Accessory(a, c, true), _) if a == address && c == closed), "{address}");
+        }
+        assert!(matches!(target(&accessory(9, true, false)[..2]), (Target::Accessory(9, true, false), _)));
+    }
 
     #[test]
     fn a_consist_takes_speed_at_its_address_and_only_the_functions_it_lets_through() {

@@ -2278,3 +2278,71 @@ fn the_browser_throttle_serves_its_page_and_drives_from_a_web_socket() {
     let Some(printed) = run_example_on_screen_with("browser-sample", "browser_throttle.leah", None, driver, 15000, &[("LEAH_TEST_PHONE_SERVER", "1")]) else { return };
     assert!(printed.contains("[200, true, false]\n[\"hello\", false]\n[63, 63, true, true]\n"), "{printed}");
 }
+
+#[test]
+fn turnouts_are_thrown_by_accessory_packets() {
+    let run = run("turnouts", r#"
+$base = dcc_base(simulate: true)
+$base.power = true
+$t = turnout(12, name: "Yard lead")
+$t.on_changed = function($state) {
+    print("changed " + $state)
+}
+print([$t.name, $t.state, $base.accessory(12)])
+$t.throw()
+print([$t.state, $base.accessory(12)])
+$t.close()
+print([$t.state, $base.accessory(12)])
+$t.toggle()
+print($base.accessory(12))
+$p = $base.packets
+print([$p[count($p) - 2]["bytes"], $p[count($p) - 2]["meaning"], $p[count($p) - 1]["meaning"]])
+$wired = turnout(13, inverted: true)
+$wired.close()
+print([$wired.state, $base.accessory(13)])
+try {
+    turnout(2045)
+} catch $e {
+    print($e.message)
+}
+"#);
+    assert_eq!(
+        run.stdout,
+        "[\"Yard lead\", \"unknown\", null]\n[\"thrown\", \"thrown\"]\n[\"closed\", \"closed\"]\nthrown\n[\"83 FE 7D\", \"turnout 12 (Yard lead): thrown\", \"turnout 12 (Yard lead): let go\"]\n[\"closed\", \"thrown\"]\nturnout(): a turnout's address is its accessory decoder's output, 1 to 2044, not 2045\nchanged thrown\nchanged closed\nchanged thrown\n",
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn a_phone_throws_a_real_turnout() {
+    let script = r#"
+$base = dcc_base(simulate: true)
+$base.power = true
+$t = turnout(12, name: "T12")
+$server = phone_throttle_server(port: 0, announce: false)
+$server.add_turnout($t, label: "Yard lead")
+$server.on_turnout_request = function($name, $state) {
+    global $base
+    print([$name, $state, $base.accessory(12)])
+}
+$server.on_client_left = function($name) {
+    global $server, $t
+    $t.close()
+    print($base.accessory(12))
+    $server.close()
+}
+print($server.port)
+"#;
+    let run = Running::start("phone_turnout", script);
+    let port: u16 = run.next().trim().parse().expect("the server's port printed");
+    let mut phone = Phone::connect(port);
+    let hello = phone.listen();
+    assert!(hello.contains(&"PTL]\\[T12}|{Yard lead}|{1".to_string()), "a real turnout not yet moved: unknown: {hello:?}");
+    phone.say("PTATT12");
+    assert!(phone.listen().contains(&"PTA4T12".to_string()));
+    assert_eq!(run.next(), "[\"T12\", \"thrown\", \"thrown\"]");
+    phone.say("Q");
+    let (ok, err) = run.end();
+    assert!(ok, "{err}");
+}

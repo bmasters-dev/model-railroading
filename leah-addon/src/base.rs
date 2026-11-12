@@ -16,7 +16,7 @@ use crate::dcc::{self, DecoderState, Reader, Target};
 use crate::makers;
 
 const BASE_PROPS: &[&str] = &["simulate", "port", "reader", "power", "packets", "timing", "shield", "current", "current_limit", "locomotives"];
-const BASE_FUNCS: &[&str] = &["emergency_stop", "stop_all", "decoder", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit", "identify_decoder", "reset_decoder", "find_decoder_locks", "unlock_decoder", "lock_decoder"];
+const BASE_FUNCS: &[&str] = &["emergency_stop", "stop_all", "decoder", "accessory", "clear_packets", "close", "read_cv", "read_address", "write_cv", "write_address", "verify_cv", "read_cv_bit", "write_cv_bit", "identify_decoder", "reset_decoder", "find_decoder_locks", "unlock_decoder", "lock_decoder"];
 const LOCO_PROPS: &[&str] = &["address", "long", "base", "speed", "direction", "speed_steps", "speed_percent", "speed_limit", "momentary", "labels", "entry"];
 const LOCO_FUNCS: &[&str] = &["set_function", "function", "press_function", "release_function", "stop", "emergency_stop", "write_cv", "write_cv_bit"];
 /// The least time between two writes on the main to one locomotive, unless `pause:` says otherwise:
@@ -51,6 +51,9 @@ pub struct DccBase {
     /// state: the simulated ones', or, on a board, what the reader board heard.
     reader: RefCell<Reader>,
     decoders: RefCell<BTreeMap<(u16, bool), DecoderState>>,
+    /// The accessory decoders' outputs, as the simulated track or the reader heard them: each output
+    /// address's last route switched on (true: closed).
+    accessories: RefCell<BTreeMap<u16, bool>>,
     /// The locomotive objects made on it (for its emergency stop).
     locomotives: RefCell<Vec<Weak<Locomotive>>>,
     /// The board, when it isn't simulated (None again once closed); its port, its reader's port.
@@ -159,6 +162,7 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
         sent: RefCell::new(VecDeque::new()),
         reader: RefCell::new(Reader::default()),
         decoders: RefCell::new(BTreeMap::new()),
+        accessories: RefCell::new(BTreeMap::new()),
         locomotives: RefCell::new(Vec::new()),
         link: RefCell::new(None),
         port: None,
@@ -283,6 +287,9 @@ impl DccBase {
                     (Target::Locomotive(address, long), instruction) => {
                         dcc::deliver(&mut decoders, address, long, instruction);
                     }
+                    (Target::Accessory(output, closed, true), _) => {
+                        self.accessories.borrow_mut().insert(output, closed);
+                    }
                     (Target::Broadcast, instruction) => {
                         for state in decoders.values_mut() {
                             dcc::obey(state, instruction);
@@ -402,6 +409,12 @@ impl DccBase {
                     match dcc::target(&data) {
                         (Target::Locomotive(address, long), instruction) => {
                             any |= dcc::deliver(&mut decoders, address, long, instruction);
+                        }
+                        (Target::Accessory(output, closed, on), _) => {
+                            if on {
+                                self.accessories.borrow_mut().insert(output, closed);
+                            }
+                            any = true;
                         }
                         (Target::Broadcast, instruction) => {
                             // (Every decoder obeys; one that hasn't heard anything yet has nothing to stop.)
@@ -654,6 +667,21 @@ impl Object for DccBase {
                 Ok(match self.decoders.borrow().get(&(address, long)) {
                     Some(state) if state.heard > 0 => decoder_value(address, long, state),
                     _ => Value::Null,
+                })
+            }
+            // (What an accessory decoder's output understood: "closed", "thrown", or null.)
+            "accessory" => {
+                call.count_between(1, 1)?;
+                call.only_options(&[])?;
+                let address = match call.arg(0).as_int() {
+                    Some(n @ 1..=2044) => n as u16,
+                    _ => return Err(Error::range_error(format!("dcc_base.accessory(): an accessory's address is 1 to {}, not {}", dcc::ACCESSORY_MOST, describe(call.arg(0))))),
+                };
+                self.take_heard(call);
+                Ok(match self.accessories.borrow().get(&address) {
+                    Some(true) => Value::from("closed"),
+                    Some(false) => Value::from("thrown"),
+                    None => Value::Null,
                 })
             }
             "clear_packets" => {

@@ -146,6 +146,8 @@ struct Turnout {
     label: String,
     /// 1 unknown, 2 closed, 4 thrown (the protocol's).
     state: u8,
+    /// The real turnout it stands for, when the script gave one: a phone's request moves it.
+    object: Option<Rc<crate::turnout::Turnout>>,
 }
 
 struct Route {
@@ -406,6 +408,16 @@ fn read_phone(mut stream: TcpStream, id: u64, watch: Arc<Watch>, shared: Arc<Sha
     }
 }
 
+/// A real turnout moved (by the script, a phone, or another server): every phone told.
+pub(crate) fn turnout_changed(base: &DccBase, turnout: &crate::turnout::Turnout) {
+    for s in base.phone_servers.borrow().iter().filter_map(Weak::upgrade) {
+        let found = s.turnouts.borrow().iter().position(|t| t.object.as_ref().is_some_and(|o| std::ptr::eq(Rc::as_ptr(o), turnout)));
+        if let Some(i) = found {
+            s.set_turnout_state(i, if turnout.state_word() == "closed" { 2 } else { 4 });
+        }
+    }
+}
+
 /// The track power changed (the script, a phone, or the board): every phone told.
 pub(crate) fn power_changed(base: &DccBase, on: bool) {
     for s in base.phone_servers.borrow().iter().filter_map(Weak::upgrade) {
@@ -621,14 +633,27 @@ impl PhoneServer {
                 self.alert(id, &format!("Leah: there is no turnout {name}"));
                 return;
             };
-            let now = self.turnouts.borrow()[i].state;
+            let (now, object) = {
+                let turnouts = self.turnouts.borrow();
+                (turnouts[i].state, turnouts[i].object.clone())
+            };
             let state = match action {
                 'C' => 2,
                 'T' => 4,
                 '2' => if now == 4 { 2 } else { 4 },
                 _ => return,
             };
-            self.set_turnout_state(i, state);
+            // (A real turnout moved: its move tells every phone.)
+            match object {
+                Some(o) => {
+                    if let Err(e) = o.set(state == 2, call) {
+                        self.alert(id, &format!("Leah: turnout {name} wasn't moved: {}", e.message));
+                        return;
+                    }
+                    self.set_turnout_state(i, state);
+                }
+                None => self.set_turnout_state(i, state),
+            }
             self.events.fire("on_turnout_request", vec![Value::from(name), Value::from(if state == 2 { "closed" } else { "thrown" })]);
         } else if let Some(rest) = line.strip_prefix("PRA") {
             let name = rest.get(1..).unwrap_or("").trim().to_string();
@@ -1132,16 +1157,27 @@ impl Object for PhoneServer {
             "add_turnout" => {
                 call.count_between(1, 1)?;
                 call.only_options(&["label", "state"])?;
-                let name = plain_name(call, 0, &what)?;
+                // (A real turnout, or a name the script moves its own way in on_turnout_request.)
+                let object = call.own::<crate::turnout::Turnout>(0);
+                let name = match &object {
+                    Some(o) => o.name().to_string(),
+                    None => plain_name(call, 0, &what)?,
+                };
                 if self.turnout_index(&name).is_some() {
                     return Err(Error::range_error(format!("{what}: there is a turnout {name} already")));
                 }
                 let label = label_option(call, &what, &name)?;
-                let state = match call.option("state") {
-                    None => 2,
-                    Some(v) => turnout_state(v, &what).map_err(|e| e.at(call.option_line("state")))?,
+                let state = match (&object, call.option("state")) {
+                    (Some(_), Some(_)) => return Err(Error::type_error(format!("{what}: a turnout's state is its own: no `state:`")).at(call.option_line("state"))),
+                    (Some(o), None) => match o.state_word() {
+                        "closed" => 2,
+                        "thrown" => 4,
+                        _ => 1,
+                    },
+                    (None, None) => 2,
+                    (None, Some(v)) => turnout_state(v, &what).map_err(|e| e.at(call.option_line("state")))?,
                 };
-                self.turnouts.borrow_mut().push(Turnout { name, label, state });
+                self.turnouts.borrow_mut().push(Turnout { name, label, state, object });
                 // (Phones list turnouts as they connect: those connected are told the list again.)
                 for l in self.turnout_lines() {
                     self.shared.send_all(&l);
@@ -1154,6 +1190,12 @@ impl Object for PhoneServer {
                 let name = call.text(0)?.trim().to_string();
                 let i = self.turnout_index(&name).ok_or_else(|| Error::range_error(format!("{what}: there is no turnout {name}")))?;
                 let state = turnout_state(call.arg(1), &what)?;
+                // (A real one moved too, unless only its state is said to be unknown.)
+                let object = self.turnouts.borrow()[i].object.clone();
+                match object {
+                    Some(o) if state != 1 => o.set(state == 2, call)?,
+                    _ => {}
+                }
                 self.set_turnout_state(i, state);
                 Ok(Value::Null)
             }

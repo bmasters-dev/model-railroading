@@ -72,6 +72,7 @@ $base.power = true
 
 | Name | Parameters | Returns |
 |---|---|---|
+| [accessory](#accessory) | address as number | text |
 | [clear_packets](#clear_packets) | | |
 | [close](#close) | | |
 | [read_address](#read_address) | in_background: boolean | array |
@@ -242,6 +243,14 @@ print("a 1's halves: " + $t["one"][0] + " to " + $t["one"][1] + " µs")
 ```
 
 ## Function descriptions
+
+### accessory
+
+**accessory**(address) · text
+
+What the accessory decoder output at `address` (1 to 2044) understood from the signal, as a [turnout](ref:turnout) moves it: `"closed"` or `"thrown"`, the simulated decoder's or, on a board, what the reader heard; `null` when no accessory packet has reached it. Anything but 1 to 2044 is a `range_error`.
+
+---
 
 ### clear_packets
 
