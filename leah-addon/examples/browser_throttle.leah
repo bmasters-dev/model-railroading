@@ -32,17 +32,20 @@ button.on { background: #2f7d32; border-color: #3fa142; }
 #big { font-size: 44px; font-weight: bold; text-align: center; margin: 4px; }
 #name { text-align: center; color: #a3be8c; min-height: 22px; }
 .fn { min-width: 70px; }
+#power { width: 100%; font-size: 20px; font-weight: bold; background: #6b2a2a; border-color: #bf4b4b; }
+#power.on { background: #2f7d32; border-color: #3fa142; }
 #estop { background: #bf2a2a; border-color: #e04848; color: white; font-weight: bold; width: 100%; font-size: 22px; margin-top: 14px; }
 #status { color: #81a1c1; font-size: 14px; }
 </style></head><body>
 <h1 id="title">Throttle</h1>
+<button id="power">Track power: OFF (tap to switch on)</button>
 <div class="row"><select id="roster"><option value="">Roster…</option></select>
 <input id="addr" type="number" min="1" max="10239" placeholder="address" style="width: 120px">
 <button id="take">Take</button></div>
 <div id="name"></div>
 <div id="big">–</div>
 <input id="speed" type="range" min="0" max="126" value="0" disabled>
-<div class="row"><button id="rev">◀ Reverse</button><button id="stop">Stop</button><button id="fwd">Forward ▶</button><button id="power">Track power</button></div>
+<div class="row"><button id="rev">◀ Reverse</button><button id="stop">Stop</button><button id="fwd">Forward ▶</button></div>
 <div class="row" id="fns"></div>
 <button id="estop">EMERGENCY STOP (all)</button>
 <p id="status">Connecting…</p>
@@ -59,7 +62,7 @@ function connect() {
 function show(m) {
   if (m.hello) { $("title").textContent = m.hello; document.title = m.hello; }
   if (m.roster) { const r = $("roster"); r.length = 1; for (const n of m.roster) r.add(new Option(n, n)); }
-  if ("power" in m) $("power").classList.toggle("on", m.power);
+  if ("power" in m) { $("power").classList.toggle("on", m.power); $("power").textContent = m.power ? "Track power: ON" : "Track power: OFF (tap to switch on)"; }
   if (m.error) $("status").textContent = m.error;
   if (m.loco) {
     const first = !loco || loco.address !== m.loco.address;
