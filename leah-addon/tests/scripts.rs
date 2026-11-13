@@ -2907,3 +2907,73 @@ fn the_layout_panel_lines_a_path_and_runs_a_train_along_it() {
     let Some(printed) = run_example_on_screen_with("layout-panel", "layout_panel.leah", None, driver, 15000, &[]) else { return };
     assert!(printed.contains("Lined and held: West main to East main (3 blocks)\n[\"West main to East main\", false]\n[false, false, false, false]\n"), "{printed}");
 }
+
+#[test]
+fn a_fast_clock_says_its_minutes_and_alarms() {
+    // At 60 times real time, a layout minute a second: 06:59, then 07:00 with its alarm, which stops
+    // it; a stopped clock lets the script end.
+    let script = r#"$clock = fast_clock(time: "06:58:30", rate: 60, alarms: ["07:00"])
+print([$clock.time, $clock.running, $clock.rate, $clock.alarms, $clock.hour, $clock.minute])
+$clock.on_minute = function($time) {
+    print("minute " + $time)
+}
+$clock.on_alarm = function($time) {
+    global $clock
+    print("alarm " + $time)
+    $clock.stop()
+    print([$clock.running, $clock.time])
+}
+$clock.start()
+foreach [function() { fast_clock(rate: 100) }, function() { fast_clock(time: "25:00") }, function() { $clock.alarms = ["7"] }] as $f {
+    try {
+        $f()
+    } catch $e {
+        print($e.message)
+    }
+}
+"#;
+    let run = run("fast-clock", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        r#"["06:58", false, 60, ["07:00"], 6, 58]
+fast_clock(): a fast clock's rate is how much faster it runs, 0.1 to 60 (4: four minutes to each real one), not 100
+fast_clock(): a time of day is like "14:05" or "14:05:30", not "25:00"
+a fast_clock's `alarms`: a time of day is like "14:05" or "14:05:30", not "7"
+minute 06:59
+minute 07:00
+alarm 07:00
+[false, "07:00"]
+"#
+    );
+}
+
+#[test]
+fn phones_show_a_fast_clock_and_follow_it() {
+    let script = r#"$base = dcc_base(simulate: true)
+$clock = fast_clock(time: "06:00", rate: 4)
+$server = phone_throttle_server(port: 0, announce: false)
+$server.set_clock($clock)
+$server.on_client = function($name) {
+    global $clock
+    $clock.start()
+}
+$server.on_client_left = function($name) {
+    global $server, $clock
+    $clock.stop()
+    $server.close()
+}
+print($server.port)
+"#;
+    let run = Running::start("phone_clock", script);
+    let port: u16 = run.next().trim().parse().expect("the server's port printed");
+    let mut phone = Phone::connect(port);
+    let hello = phone.listen();
+    assert!(hello.iter().any(|l| l.starts_with("PFT21600<;>0.0")), "stopped: its time and no rate: {hello:?}");
+    phone.say("NPhone");
+    let heard = phone.listen();
+    assert!(heard.iter().any(|l| l.starts_with("PFT2160") && l.ends_with("<;>4.0")), "started: its rate: {heard:?}");
+    phone.say("Q");
+    let (ok, err) = run.end();
+    assert!(ok, "{err}");
+}

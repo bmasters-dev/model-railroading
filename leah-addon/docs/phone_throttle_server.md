@@ -59,7 +59,7 @@ Starting it needs Leah 0.1.0-alpha.50 or later; an older Leah says so (an `api_e
 | [message](#message) | text, alert: boolean | |
 | [remove_route](#remove_route) | name as text | |
 | [remove_turnout](#remove_turnout) | name as text | |
-| [set_clock](#set_clock) | time as text, rate: number | |
+| [set_clock](#set_clock) | clock or time, rate: number | |
 | [set_route](#set_route) | name as text, state as text | |
 | [set_turnout](#set_turnout) | name as text, state as text | |
 | [stop_clock](#stop_clock) | | |
@@ -217,9 +217,11 @@ Takes a turnout away; the phones connected are told. One it doesn't have is a `r
 
 ### set_clock
 
+**set_clock**(clock)
+
 **set_clock**(time, rate: 1)
 
-Starts the fast clock the phones show, at a time of day (`"06:00"` or `"06:00:30"`), running `rate` times as fast as a real clock (0.1 to 60; 4 for four minutes to each real one). Every phone is told at once, and again at each fast minute.
+Given a [fast_clock](ref:fast_clock), the phones show it, and follow it as it is set, started, and stopped. Given a time of day (`"06:00"` or `"06:00:30"`), it starts a clock of the server's own, running `rate` times as fast as a real clock (0.1 to 60; 4 for four minutes to each real one). Every phone is told at once, and again at each fast minute.
 
 ```leah check
 $server.set_clock("06:00", rate: 4)

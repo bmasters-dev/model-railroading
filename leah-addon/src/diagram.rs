@@ -22,7 +22,7 @@ use crate::sensor::{as_follower, Follower, Sensor};
 use crate::turnout::Turnout;
 
 pub(crate) const PROPS: &[&str] = &["grid", "track_width", "show_names", "background_color", "plan", "entry"];
-pub(crate) const FUNCS: &[&str] = &["add_track", "add_turnout", "add_sensor", "add_light", "add_label", "clear", "pick_block", "cancel_entry"];
+pub(crate) const FUNCS: &[&str] = &["add_track", "add_turnout", "add_sensor", "add_light", "add_label", "add_clock", "clear", "pick_block", "cancel_entry"];
 pub(crate) const EVENTS: &[&str] = &["on_turnout_clicked", "on_block_clicked", "on_light_clicked", "on_sensor_clicked", "on_route_set", "on_route_refused"];
 
 type Point = (f64, f64);
@@ -34,6 +34,7 @@ enum Piece {
     Sensor(Rc<Sensor>, Point),
     Light(Rc<Light>, Point),
     Label(String, Point),
+    Clock(Rc<crate::clock::FastClock>, Point),
 }
 
 /// What the drawing and the clicks share.
@@ -123,7 +124,7 @@ impl Shown {
                     if near < reach * 2.0 { near * 0.5 } else { legs }
                 }
                 Piece::Sensor(_, at) | Piece::Light(_, at) => ((p.0 - at.0).powi(2) + (p.1 - at.1).powi(2)).sqrt() * 0.5,
-                Piece::Label(..) => f64::INFINITY,
+                Piece::Label(..) | Piece::Clock(..) => f64::INFINITY,
             };
             if d <= reach && best.is_none_or(|(b, _)| d < b) {
                 best = Some((d, i));
@@ -210,6 +211,17 @@ impl Shown {
             cr.set_source_rgb(0.1, 0.1, 0.12);
             cr.set_line_width(1.0);
             let _ = cr.stroke();
+        }
+        // (A fast clock's time, larger than the labels.)
+        for piece in pieces.iter() {
+            if let Piece::Clock(clock, at) = piece {
+                cr.set_font_size((g * 1.1).clamp(14.0, 40.0));
+                let text = clock.words();
+                let half = cr.text_extents(&text).ok().map_or(0.0, |e| e.width() / 2.0);
+                cr.set_source_rgb(if clock.is_running() { LAMP_ON.0 } else { DIM.0 }, if clock.is_running() { LAMP_ON.1 } else { DIM.1 }, if clock.is_running() { LAMP_ON.2 } else { DIM.2 });
+                cr.move_to(at.0 * g - half, at.1 * g);
+                let _ = cr.show_text(&text);
+            }
         }
         cr.set_font_size((g * 0.55).clamp(9.0, 16.0));
         for piece in pieces.iter() {
@@ -491,6 +503,16 @@ impl Object for TrackDiagram {
                     Piece::Light(l, at)
                 };
                 self.shown.pieces.borrow_mut().push(piece);
+            }
+            "add_clock" => {
+                call.count_between(2, 2)?;
+                call.only_options(&[])?;
+                let clock = call.own::<crate::clock::FastClock>(0).ok_or_else(|| Error::type_error(format!("{what}: the first value is a fast_clock, not {}", describe(call.arg(0)))))?;
+                let at = point_of(call.arg(1), &what)?;
+                if let Some(me) = self.me() {
+                    clock.follow(me);
+                }
+                self.shown.pieces.borrow_mut().push(Piece::Clock(clock, at));
             }
             "add_label" => {
                 call.count_between(2, 2)?;

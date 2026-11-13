@@ -171,6 +171,8 @@ pub struct PhoneServer {
     clients: RefCell<BTreeMap<u64, Client>>,
     turnouts: RefCell<Vec<Turnout>>,
     routes: RefCell<Vec<Route>>,
+    /// The fast clock the phones show, when the script gave one (`set_clock($clock)`): followed.
+    clock_source: RefCell<Option<Rc<crate::clock::FastClock>>>,
     /// The phone and throttle whose command is being run, with the speed or direction it asked for:
     /// not told those back when they came out as asked (a slider being dragged would jump), but told
     /// when they didn't (a speed limit), and always told its functions (a latching key needs to hear).
@@ -272,6 +274,7 @@ pub fn new_server(call: &mut Call) -> Result<Value, Error> {
             clients: RefCell::new(BTreeMap::new()),
             turnouts: RefCell::new(Vec::new()),
             routes: RefCell::new(Vec::new()),
+            clock_source: RefCell::new(None),
             origin: Cell::new(None),
             made: RefCell::new(BTreeMap::new()),
             consists: RefCell::new(BTreeMap::new()),
@@ -1044,6 +1047,22 @@ impl PhoneServer {
     }
 }
 
+impl PhoneServer {
+    /// The fast clock it follows, as the phones show it: its time and rate (0 while it is stopped).
+    fn show_fast_clock(&self) {
+        let Some(fast) = self.clock_source.borrow().clone() else { return };
+        let clock = Clock { seconds: fast.now(), rate: if fast.is_running() { fast.rate() } else { 0.0 }, set_at: Instant::now() };
+        *self.shared.clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(clock);
+        self.shared.send_all(&clock.line());
+    }
+}
+
+impl crate::sensor::Follower for PhoneServer {
+    fn followed_changed(&self, _call: &Call) {
+        self.show_fast_clock();
+    }
+}
+
 impl Drop for PhoneServer {
     fn drop(&mut self) {
         self.close_now();
@@ -1288,6 +1307,20 @@ impl Object for PhoneServer {
             "set_clock" => {
                 call.count_between(1, 1)?;
                 call.only_options(&["rate"])?;
+                // (A fast clock: the phones show it, and follow it as it is set, started, and stopped.)
+                if let Some(fast) = call.own::<crate::clock::FastClock>(0) {
+                    if call.option("rate").is_some() {
+                        return Err(Error::type_error(format!("{what}: a fast clock has its own rate: no `rate:`")).at(call.option_line("rate")));
+                    }
+                    let me = self.base.phone_servers.borrow().iter().filter_map(Weak::upgrade).find(|s| std::ptr::eq(Rc::as_ptr(s), self));
+                    if let Some(me) = me {
+                        fast.follow(crate::sensor::as_follower(&me));
+                    }
+                    *self.clock_source.borrow_mut() = Some(fast);
+                    self.show_fast_clock();
+                    return Ok(Value::Null);
+                }
+                self.clock_source.borrow_mut().take();
                 let seconds = time_of_day(call.arg(0), &what)?;
                 let rate = match call.option("rate") {
                     None => 1.0,
@@ -1304,6 +1337,7 @@ impl Object for PhoneServer {
             "stop_clock" => {
                 call.count_between(0, 0)?;
                 call.only_options(&[])?;
+                self.clock_source.borrow_mut().take();
                 let stopped = self.shared.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|c| {
                     *c = Clock { seconds: c.now(), rate: 0.0, set_at: Instant::now() };
                     *c

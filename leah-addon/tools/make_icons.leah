@@ -159,6 +159,13 @@ $icons["track_diagram"] = function() {
     ic.stroke([[4, 10], [6, 6], [10, 6], [12, 10]], ic.mid, 1.5)
     ic.stroke([[6, 10], [10, 10]], ic.red, 1.5)
 }
+` A fast clock: a clock face, its hands, and a little arrow of speed.
+$icons["fast_clock"] = function() {
+    ic.circle(1, 1, 14, 14, ic.face, ic.edge)
+    ic.stroke([[8, 8], [8, 3.5]], ic.ink, 1.5)
+    ic.stroke([[8, 8], [11.5, 9.5]], ic.ink, 1.5)
+    ic.shape([[11, 1], [15.5, 1], [15.5, 5.5]], ic.orange)
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)

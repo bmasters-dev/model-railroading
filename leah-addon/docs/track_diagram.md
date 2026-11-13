@@ -54,6 +54,7 @@ Placed in a window as any control is, with its properties as settings.
 
 | Name | Parameters | Returns |
 |---|---|---|
+| [add_clock](#add_clock) | clock, at | |
 | [add_label](#add_label) | text, at | |
 | [add_light](#add_light) | light, at | |
 | [add_sensor](#add_sensor) | sensor, at | |
@@ -123,6 +124,14 @@ The [track_plan](ref:track_plan) entry and exit finds paths in; `null` (the defa
 The track's width in pixels: 1 to 40 (5 unless set).
 
 ## Function descriptions
+
+### add_clock
+
+**add_clock**(clock, at)
+
+A [fast_clock](ref:fast_clock)'s time, large, centered on a place: bright while it runs, dim while it is stopped.
+
+---
 
 ### add_label
 
