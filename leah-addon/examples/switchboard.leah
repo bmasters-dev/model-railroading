@@ -1,0 +1,73 @@
+` A switchboard for an accessory decoder's eight outputs (such as an NCE Switch8's): a button for each
+` turnout, saying which way it lies; a click throws it the other way. Choose the base station (or the
+` simulated one), Connect, and switch the track power on: the decoder takes its commands from the
+` track.
+
+$base = null
+$turnouts = []
+
+$win = window(title: "Switchboard", width: 560, height: 260, minimum_width: 460, minimum_height: 220)
+$port_label = label(left: 20, top: 24, width: 100, text: "Base station:")
+$win.add($port_label)
+$port = popup_menu(left: 120, top: 20, width: 200)
+$win.add($port)
+$connect = button(left: 332, top: 18, width: 100, height: 34, text: "Connect")
+$win.add($connect)
+$power = button(left: 440, top: 18, width: 100, height: 34, text: "Power on", enabled: false, lock_right: true)
+$win.add($power)
+$board = switchboard(left: 20, top: 66, width: 520, height: 150, columns: 4, lock_right: true, lock_bottom: true)
+$win.add($board)
+$state = label(left: 20, top: 226, width: 520, lock_right: true, lock_top: false, lock_bottom: true, text: "Not connected")
+$win.add($state)
+
+$connect.on_click = function() {
+    global $base, $port, $board, $turnouts, $state, $power, $connect
+    if $base != null {
+        $base.close()
+        $base = null
+        $board.clear()
+        $state.text = "Not connected"
+        $power.enabled = false
+        $connect.text = "Connect"
+        return
+    }
+    try {
+        $base = if $port.selected_row_tag == "simulate" then dcc_base(simulate: true) else dcc_base($port.selected_row_tag)
+    } catch $e {
+        $state.text = $e.message
+        return
+    }
+    $turnouts = []
+    for $n = 1 to 8 {
+        $turnouts[] = turnout($n, name: "Output " + to_text($n))
+    }
+    foreach $turnouts as $t {
+        $board.add($t)
+    }
+    $state.text = "Connected. Switch the track power on, then click a turnout."
+    $power.enabled = true
+    $connect.text = "Disconnect"
+}
+
+$power.on_click = function() {
+    global $base, $power
+    $base.power = not $base.power
+    $power.text = if $base.power then "Power off" else "Power on"
+}
+
+$board.on_clicked = function($t) {
+    global $state
+    $state.text = $t.name + ": " + $t.state
+}
+
+$port.add_row("Simulated (no board)", tag: "simulate")
+foreach dcc_ports() as $p {
+    $port.add_row($p["port"] + ": " + $p["name"], tag: $p["port"])
+    if starts_with($p["name"], "Arduino Mega") {
+        $port.selected_row_index = $port.row_count - 1
+    }
+}
+if $port.selected_row_index < 0 {
+    $port.selected_row_index = 0
+}
+$win.show()

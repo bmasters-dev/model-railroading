@@ -188,6 +188,12 @@ $icons["speedometer"] = function() {
     ic.circle(6.5, 8.5, 3, 3, ic.ink)
     ic.fill(1, 12.5, 14, 1.5, ic.edge)
 }
+` A switchboard: a grid of buttons, two of them lit.
+$icons["switchboard"] = function() {
+    foreach [[1, 2], [6, 2], [11, 2], [1, 9], [6, 9], [11, 9]] as $i: $p {
+        ic.fill($p[0], $p[1], 4, 5, if $i == 0 or $i == 4 then ic.green else ic.edge)
+    }
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)

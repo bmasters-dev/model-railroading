@@ -3273,3 +3273,10 @@ while milliseconds() < $until {
     assert!(run.success, "{}", run.stderr);
     assert_eq!(run.stdout, "\n06:01\n06:02\nalarm 06:02\n");
 }
+
+#[test]
+fn the_switchboard_sample_shows_eight_turnouts() {
+    let driver = "call_later(300, function() {\n    global $connect, $power, $board, $turnouts, $base\n    $connect.click()\n    $power.click()\n    $turnouts[2].throw()\n    print([$board.count, $turnouts[2].state, $base.accessory(3), $base.power])\n    quit()\n})\n";
+    let Some(printed) = run_example_on_screen_with("switchboard-sample", "switchboard.leah", None, driver, 10000, &[]) else { return };
+    assert!(printed.contains("[8, \"thrown\", \"thrown\", true]\n"), "{printed}");
+}

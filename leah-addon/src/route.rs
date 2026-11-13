@@ -65,6 +65,8 @@ pub struct Route {
     me: RefCell<Weak<Route>>,
     /// Reserving without warnings (reserve_silently).
     quiet: Cell<bool>,
+    /// The switchboards showing it.
+    pub(crate) followers: crate::sensor::Followers,
     events: Events,
 }
 
@@ -130,6 +132,7 @@ pub(crate) fn make(call: &mut Call, name: String, settings: Vec<(Rc<Turnout>, Wa
         ours: RefCell::new(Vec::new()),
         me: RefCell::new(Weak::new()),
         quiet: Cell::new(false),
+        followers: crate::sensor::Followers::default(),
         events,
     });
     if let Some(made) = call.own_value::<Route>(&value) {
@@ -347,6 +350,7 @@ impl Follower for Route {
             if aligned {
                 self.events.fire("on_aligned", vec![]);
             }
+            self.followers.tell(call);
         }
         // (Each block held is let go once the train has been in it and left it.)
         let mut released = Vec::new();

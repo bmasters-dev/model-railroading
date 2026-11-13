@@ -23,7 +23,7 @@ const FORMAT: i64 = 1;
 
 /// One of a layout's objects.
 #[derive(Clone)]
-enum Item {
+pub(crate) enum Item {
     Sensor(Rc<Sensor>),
     Turnout(Rc<Turnout>),
     Block(Rc<Block>),
@@ -40,7 +40,7 @@ impl Item {
         }
     }
 
-    fn kind(&self) -> &'static str {
+    pub(crate) fn kind(&self) -> &'static str {
         match self {
             Item::Sensor(_) => "sensor",
             Item::Turnout(_) => "turnout",
@@ -49,7 +49,7 @@ impl Item {
         }
     }
 
-    fn value(&self, call: &Call) -> Value {
+    pub(crate) fn value(&self, call: &Call) -> Value {
         match self {
             Item::Sensor(s) => call.object_value(s),
             Item::Turnout(t) => call.object_value(t),
@@ -94,6 +94,11 @@ pub fn new_layout(call: &mut Call) -> Result<Value, Error> {
 }
 
 impl Layout {
+    /// Its objects, in the order they were added.
+    pub(crate) fn items(&self) -> Vec<Item> {
+        self.items.borrow().clone()
+    }
+
     /// Adds an object, its name not yet used by another in the layout (the same object again: nothing).
     fn add(&self, item: Item, what: &str) -> Result<(), Error> {
         let mut items = self.items.borrow_mut();
