@@ -16,6 +16,7 @@ mod makers;
 mod phone;
 mod programmer;
 mod roster;
+mod sensor;
 mod turnout;
 
 use leah_addon_kit::{Function, Needs, Value};
@@ -61,6 +62,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("consist", &[], consist::new_consist as Function),
             ("phone_throttle_server", &[Needs::Web], phone::new_server as Function),
             ("turnout", &[], turnout::new_turnout as Function),
+            ("sensor", &[], sensor::new_sensor as Function),
         ],
         needs: Some(needs),
         objects: vec![
@@ -72,7 +74,8 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("roster", &["path", "names", "count", "groups", "changed"], &["add", "entry", "entries", "remove", "save", "export_entries", "import_entries"], &[]),
             ("roster_entry", &["name", "road_name", "road_number", "address", "long", "decoder", "model", "notes", "picture", "groups", "cvs", "functions", "speed_limit", "attributes"], &["set_function", "attribute", "set_attribute"], &[]),
             ("dcc_program_job", &["port", "role", "board", "finished", "succeeded", "message"], &["wait"], &["on_finished"]),
-            ("turnout", &["address", "name", "state", "inverted", "base"], &["close", "throw", "toggle"], &["on_changed"]),
+            ("turnout", &["address", "name", "state", "commanded", "inverted", "feedback", "sensors", "move_time", "locked", "base"], &["close", "throw", "toggle"], &["on_changed", "on_mismatch"]),
+            ("sensor", &["pin", "name", "state", "active", "inverted", "pull", "active_delay", "inactive_delay", "base"], &["simulate"], &["on_changed", "on_active", "on_inactive"]),
             ("phone_throttle_server", &["name", "port", "running", "clients", "heartbeat", "turnouts", "routes", "clock", "base", "roster"], &["add_turnout", "set_turnout", "remove_turnout", "add_route", "set_route", "remove_route", "set_clock", "stop_clock", "message", "close"], &["on_client", "on_client_left", "on_turnout_request", "on_route_request"]),
         ],
         controls: vec![],

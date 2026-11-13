@@ -17,7 +17,10 @@ pub const BASE_PROGRAM: &str = include_str!("../boards/dcc_base/dcc_base.ino");
 pub const READER_PROGRAM: &str = include_str!("../boards/dcc_reader/dcc_reader.ino");
 
 /// What each program says as it starts.
-pub const BASE_HELLO: &str = "LEAH DCC BASE 6";
+pub const BASE_HELLO: &str = "LEAH DCC BASE 7";
+/// The base station's program before it watched pins (sensors): it still drives the track, and a
+/// sensor on its pins asks for the new one.
+pub const OLDER_BASE_HELLO: &str = "LEAH DCC BASE 6";
 pub const READER_HELLO: &str = "LEAH DCC READER 1";
 
 /// How a port couldn't be opened, in words a person can act on.
@@ -144,6 +147,11 @@ pub struct Heard {
     pub gone: Option<String>,
     /// The reader's port went away: the base station goes on, without its reading back.
     pub reader_gone: Option<String>,
+    /// The watched pins' levels the base station said ("P 22 0": pin 22 low), oldest first, and the
+    /// base station object's events, to post "pins_changed" to it so its sensors hear them at once
+    /// (the kit's level 6), not only at the script's next call.
+    pub pins: VecDeque<(u8, bool)>,
+    pub poster: Option<leah_addon_kit::Events>,
 }
 
 /// The link to the base station (and its reader): a thread reading both ports, saying "." to the
@@ -407,7 +415,7 @@ impl Link {
                 if let Some(gone) = &heard.gone {
                     return Err(gone.clone());
                 }
-                let base_said_hello = heard.base_hello.as_deref() == Some(BASE_HELLO);
+                let base_said_hello = heard.base_hello.as_deref().is_some_and(is_base_hello);
                 let base_ok = match asked {
                     Some((hellos, states)) => heard.base_hellos == hellos && heard.states > states,
                     None => false,
@@ -433,7 +441,9 @@ impl Link {
                     };
                     let mut problems = Vec::new();
                     // (A base station that answered "?" without saying its hello runs Leah's program too.)
-                    problems.extend(which(&heard.base_hello, &self.port, "base", BASE_HELLO, base_ok || (heard.states > 0 && heard.base_hello.is_none())));
+                    // (The older program, 6, drives the track as well: only its sensors ask for the new one.)
+                    let hello = if heard.base_hello.as_deref() == Some(OLDER_BASE_HELLO) { OLDER_BASE_HELLO } else { BASE_HELLO };
+                    problems.extend(which(&heard.base_hello, &self.port, "base", hello, base_ok || (heard.states > 0 && heard.base_hello.is_none())));
                     if let Some(r) = &self.reader_port {
                         problems.extend(which(&heard.reader_hello, r, "reader", READER_HELLO, reader_ok));
                     }
@@ -522,6 +532,23 @@ impl Lines {
 
 /// A line as a program's hello: from where "LEAH DCC" starts in it (a board starting again while it
 /// was talking leaves the start of its last line before it).
+/// Whether a base station's hello is one of the programs this addon drives (7, or 6 without sensors).
+pub fn is_base_hello(hello: &str) -> bool {
+    hello == BASE_HELLO || hello == OLDER_BASE_HELLO
+}
+
+/// A watched pin's level, "P 22 0": the pin and whether it is high.
+pub fn pin_of(line: &str) -> Option<(u8, bool)> {
+    let mut words = line.strip_prefix("P ")?.split_whitespace();
+    let pin = words.next()?.parse().ok()?;
+    let high = match words.next()? {
+        "0" => false,
+        "1" => true,
+        _ => return None,
+    };
+    words.next().is_none().then_some((pin, high))
+}
+
 fn hello_in(line: &str) -> Option<String> {
     line.rfind("LEAH DCC").map(|at| line[at..].to_string())
 }
@@ -544,7 +571,8 @@ fn run_link(base: Arc<Mutex<File>>, mut base_reading: File, mut reader: Option<F
             Some(r) => reader_lines.read(r),
             None => Ok(Vec::new()),
         };
-        {
+        let mut post_pins = false;
+        let poster = {
             let mut h = heard.lock().unwrap_or_else(|p| p.into_inner());
             if base_gone || said.is_err() {
                 h.gone = Some(format!("the base station's port {port} went away (was its cable pulled?)"));
@@ -571,6 +599,9 @@ fn run_link(base: Arc<Mutex<File>>, mut base_reading: File, mut reader: Option<F
                     h.cv_answers.push_back(line);
                 } else if let Some(n) = line.strip_prefix("A ").and_then(|n| n.trim().parse().ok()) {
                     h.current = Some(n);
+                } else if let Some(pin) = pin_of(&line) {
+                    h.pins.push_back(pin);
+                    post_pins = true;
                 } else if line != "OK" {
                     h.base_said.push_back(line);
                 }
@@ -597,6 +628,11 @@ fn run_link(base: Arc<Mutex<File>>, mut base_reading: File, mut reader: Option<F
                 reader = None;
                 h.timing = None;
             }
+            h.poster.clone()
+        };
+        // (Posted with the lock let go: the base station takes the pins in on the script's thread.)
+        if post_pins && let Some(events) = poster {
+            events.post("pins_changed", vec![]);
         }
         if last_word.elapsed() >= Duration::from_secs(1) {
             last_word = Instant::now();

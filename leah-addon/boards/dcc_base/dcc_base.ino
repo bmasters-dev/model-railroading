@@ -29,8 +29,13 @@
 //   X                  everything dropped, power off
 //   ?                  "STATE power on places 2 shield yes current 25 limit 1500"
 //   .                  nothing: only that the PC is still there
-// It answers "OK" or "ERR ..." to every line but ".", and starts with "LEAH DCC BASE 6". With the
-// shield and the power on, it says the current every half second: "A 25" (mA).
+//   I 22 1             watch pin 22 as an input with the internal pull-up (I 22 0: without it; I 22 -:
+//                      no longer): its level said at once, "P 22 1", and again whenever it changes
+//                      and stays changed for 3 ms, "P 22 0" (sensors: block detectors, pushbuttons,
+//                      track contacts). Pins 2 to 69 (A0 to A15 are 54 to 69), but the program's own
+//                      (0, 1, 3, 8, 9, 11, 12, 13, A0, A1, A4, A5). X stops watching every pin.
+// It answers "OK" or "ERR ..." to every line but ".", and starts with "LEAH DCC BASE 7" (6 was the
+// same without I). With the shield and the power on, it says the current every half second: "A 25" (mA).
 //
 // The programming track (design/model_railroading.md, "Stage 2"): the shield's channel B, as DCC-EX
 // has it (pin 11 its output on and off, pin 13 its direction, which is Timer1's OC1C, so the same
@@ -456,6 +461,39 @@ long read_number(const char *&c) {
   return digits ? n : -1;
 }
 
+// The pins watched as inputs: whether each is, the level last said, and a change waiting to last 3 ms.
+const uint8_t PINS = 70;
+bool watched[PINS];
+uint8_t said_level[PINS], new_level[PINS];
+uint8_t changed_at[PINS];             // millis()'s low byte when the waiting change was first seen
+
+bool own_pin(uint8_t pin) {
+  return pin < 2 || pin == POWER_PIN || pin == PROG_BRAKE_PIN || pin == BRAKE_PIN || pin == PROG_POWER_PIN
+      || pin == SIGNAL_PIN || pin == PROG_SIGNAL_PIN || pin == SENSE_PIN || pin == A1 || pin == FAULT_PIN || pin == PROG_FAULT_PIN;
+}
+
+void say_pin(uint8_t pin) {
+  Serial.print("P "); Serial.print(pin); Serial.print(' '); Serial.println(said_level[pin]);
+}
+
+void stop_watching() {
+  for (uint8_t pin = 0; pin < PINS; pin++) {
+    if (watched[pin]) { watched[pin] = false; pinMode(pin, INPUT); }
+  }
+}
+
+// Each watched pin's level, said when it has changed and stayed changed for 3 ms.
+void watch_pins() {
+  uint8_t now = millis();
+  for (uint8_t pin = 2; pin < PINS; pin++) {
+    if (!watched[pin]) continue;
+    uint8_t level = digitalRead(pin);
+    if (level == said_level[pin]) { new_level[pin] = level; continue; }
+    if (level != new_level[pin]) { new_level[pin] = level; changed_at[pin] = now; continue; }
+    if ((uint8_t)(now - changed_at[pin]) >= 3) { said_level[pin] = level; say_pin(pin); }
+  }
+}
+
 void obey(const char *line) {
   const char *c = line + 1;
   switch (line[0]) {
@@ -472,6 +510,7 @@ void obey(const char *line) {
     case 'X':
       set_prog(false);
       set_power(false);
+      stop_watching();
       noInterrupts();
       for (uint8_t i = 0; i < PLACES; i++) table[i].count = 0;
       waiting_tail = waiting_head;
@@ -574,6 +613,20 @@ void obey(const char *line) {
       else say_prog_cut();
       return;
     }
+    case 'I': {
+      long pin = read_number(c);
+      while (*c == ' ') c++;
+      if (pin < 2 || pin >= PINS || own_pin(pin)) { Serial.println("ERR a sensor's pin is 2 to 69, but 3, 8, 9, 11, 12, 13, A0, A1, A4, A5 (the program's own)"); return; }
+      if (*c == '-') { if (watched[pin]) { watched[pin] = false; pinMode(pin, INPUT); } Serial.println("OK"); return; }
+      if (*c != '0' && *c != '1') { Serial.println("ERR I pin 1 (pull-up), I pin 0 (none), or I pin -"); return; }
+      pinMode(pin, *c == '1' ? INPUT_PULLUP : INPUT);
+      delayMicroseconds(50);
+      said_level[pin] = new_level[pin] = digitalRead(pin);
+      watched[pin] = true;
+      Serial.println("OK");
+      say_pin(pin);
+      return;
+    }
     case 'L': {
       long n = read_number(c);
       if (n < 10 || n > 5000) { Serial.println("ERR a current limit is 10 to 5000 mA"); return; }
@@ -604,7 +657,7 @@ void obey(const char *line) {
       return;
     }
   }
-  Serial.println("ERR unknown: K, D, S, +, -, L, R, W, V, U, Y, B, X, ?, or .");
+  Serial.println("ERR unknown: K, D, S, +, -, L, R, W, V, U, Y, B, I, X, ?, or .");
 }
 
 // Whether the shield is there: its sense resistor holds A0 low against the internal pull-up.
@@ -647,7 +700,7 @@ void setup() {
   TIMSK1 = _BV(TOIE1);
   interrupts();
   Serial.begin(115200);
-  Serial.println("LEAH DCC BASE 6");
+  Serial.println("LEAH DCC BASE 7");
 }
 
 void loop() {
@@ -660,6 +713,7 @@ void loop() {
     if (c == '\n') { line[used] = 0; if (used) { last_word = millis(); obey(line); } used = 0; }
     else if (used < sizeof line - 1) line[used++] = c;
   }
+  watch_pins();
   if (power && millis() - last_word > QUIET_LIMIT) {
     power_off_because("no word from the PC for 3 seconds");
   }

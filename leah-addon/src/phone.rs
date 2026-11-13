@@ -413,7 +413,7 @@ pub(crate) fn turnout_changed(base: &DccBase, turnout: &crate::turnout::Turnout)
     for s in base.phone_servers.borrow().iter().filter_map(Weak::upgrade) {
         let found = s.turnouts.borrow().iter().position(|t| t.object.as_ref().is_some_and(|o| std::ptr::eq(Rc::as_ptr(o), turnout)));
         if let Some(i) = found {
-            s.set_turnout_state(i, if turnout.state_word() == "closed" { 2 } else { 4 });
+            s.set_turnout_state(i, turnout.wire_state());
         }
     }
 }
@@ -650,7 +650,8 @@ impl PhoneServer {
                         self.alert(id, &format!("Leah: turnout {name} wasn't moved: {}", e.message));
                         return;
                     }
-                    self.set_turnout_state(i, state);
+                    // (Where it lies: on its way, for one with feedback, until its sensors say.)
+                    self.set_turnout_state(i, o.wire_state());
                 }
                 None => self.set_turnout_state(i, state),
             }
@@ -1169,11 +1170,7 @@ impl Object for PhoneServer {
                 let label = label_option(call, &what, &name)?;
                 let state = match (&object, call.option("state")) {
                     (Some(_), Some(_)) => return Err(Error::type_error(format!("{what}: a turnout's state is its own: no `state:`")).at(call.option_line("state"))),
-                    (Some(o), None) => match o.state_word() {
-                        "closed" => 2,
-                        "thrown" => 4,
-                        _ => 1,
-                    },
+                    (Some(o), None) => o.wire_state(),
                     (None, None) => 2,
                     (None, Some(v)) => turnout_state(v, &what).map_err(|e| e.at(call.option_line("state")))?,
                 };
@@ -1193,10 +1190,12 @@ impl Object for PhoneServer {
                 // (A real one moved too, unless only its state is said to be unknown.)
                 let object = self.turnouts.borrow()[i].object.clone();
                 match object {
-                    Some(o) if state != 1 => o.set(state == 2, call)?,
-                    _ => {}
+                    Some(o) if state != 1 => {
+                        o.set(state == 2, call)?;
+                        self.set_turnout_state(i, o.wire_state());
+                    }
+                    _ => self.set_turnout_state(i, state),
                 }
-                self.set_turnout_state(i, state);
                 Ok(Value::Null)
             }
             "remove_turnout" | "remove_route" => {

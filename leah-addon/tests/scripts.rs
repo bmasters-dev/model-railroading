@@ -2346,3 +2346,202 @@ print($server.port)
     let (ok, err) = run.end();
     assert!(ok, "{err}");
 }
+
+#[test]
+fn a_sensor_on_the_simulated_base_station_waits_out_its_delays() {
+    // A sensor on the simulated base station's pin starts inactive; simulate() changes it, at once for
+    // a change without a delay, after `inactive_delay` for one with it; a change that goes back within
+    // its delay is never said; an internal sensor has no pin; a pin the base station's program uses
+    // itself, or one the board hasn't, is refused.
+    let script = r#"$base = dcc_base(simulate: true)
+$s = sensor(22, name: "East siding", inactive_delay: 300)
+print([$s.name, $s.pin, $s.state, $s.active, $s.pull, $s.inverted])
+$start = milliseconds()
+$s.on_changed = function($state) {
+    global $start
+    print("changed: " + $state + (if milliseconds() - $start >= 290 then " (after its delay)" else " (at once)"))
+}
+$s.on_active = function() {
+    print("on_active")
+}
+$s.on_inactive = function() {
+    print("on_inactive")
+}
+$s.simulate("active")
+print($s.state)
+$s.simulate("inactive")
+$s.simulate("active")
+print($s.state)
+$s.simulate("inactive")
+print($s.state)
+$r = sensor(name: "Reset")
+print([$r.pin, $r.state, sensor("A3").pin, sensor(22, inverted: true).name])
+foreach [12, "A0", 70, "B2"] as $pin {
+    try {
+        sensor($pin)
+    } catch $e {
+        print($e.type + ": " + $e.message)
+    }
+}
+try {
+    sensor()
+} catch $e {
+    print($e.message)
+}
+"#;
+    let run = run("sensor-simulated", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        r#"["East siding", 22, "inactive", false, true, false]
+active
+active
+active
+[null, "inactive", 57, "S22"]
+range_error: sensor(): pin 12 is the base station program's own (the track's signal, power, brakes, current, and faults: 3, 8, 9, 11, 12, 13, A0, A1, A4, A5)
+range_error: sensor(): pin A0 is the base station program's own (the track's signal, power, brakes, current, and faults: 3, 8, 9, 11, 12, 13, A0, A1, A4, A5)
+range_error: sensor(): a sensor's pin is the base station board's pin, 2 to 69 or "A0" to "A15", not 70
+range_error: sensor(): a sensor's pin is the base station board's pin, 2 to 69 or "A0" to "A15", not "B2"
+sensor(): give the board's pin the sensor is wired to, sensor(22), or a name for one without a pin, sensor(name: "Reset")
+changed: active (at once)
+on_active
+changed: inactive (after its delay)
+on_inactive
+"#
+    );
+}
+
+#[test]
+fn a_sensor_on_the_boards_pin_hears_it_change_while_the_script_waits() {
+    // The base station board watches pin 22 (with its pull-up: high, inactive) and says each change:
+    // low (a detector pulling it to ground) is active. The script only waits; the sensor's events
+    // come as the board speaks, and closing the base station lets the script end.
+    let log = std::env::temp_dir().join(format!("model-railroading-sensor-log-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let Some(boards) = fake_boards(&["--pins", "22:0@0.8,22:1@1.6,23:0@0.8", "--log", log.to_str().unwrap()]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!(
+        r#"$base = dcc_base("{}")
+$s = sensor(22, name: "Block 1")
+$t = sensor(23, inverted: true, pull: false)
+$seen = 0
+$s.on_changed = function($state) {{
+    global $seen, $base, $t
+    print("Block 1 " + $state)
+    $seen++
+    if $seen == 3 {{
+        print("S23 " + $t.state)
+        $base.close()
+    }}
+}}
+"#,
+        boards.base
+    );
+    let run = run("sensor-board", &script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(run.stdout, "Block 1 inactive\nBlock 1 active\nBlock 1 inactive\nS23 inactive\n");
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    assert!(said.contains("I 22 1\n") && said.contains("I 23 0\n"), "{said}");
+}
+
+#[test]
+fn a_board_with_the_older_program_drives_the_track_and_asks_for_the_new_one_for_a_sensor() {
+    let Some(boards) = fake_boards(&["--base", "six"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!("$base = dcc_base(\"{0}\")\nturnout(3).throw()\nprint($base.accessory(3) ?? \"sent\")\ntry {{\n    sensor(22)\n}} catch $e {{\n    print($e.type + \": \" + $e.message)\n}}\n$base.close()\n", boards.base);
+    let run = run("sensor-older", &script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(run.stdout, format!("sent\nhardware_error: sensor(): the base station on {0} runs Leah's older program, from before sensors: load the new one with load_dcc_program(\"{0}\", \"base\")\n", boards.base));
+}
+
+#[test]
+fn a_turnouts_feedback_says_where_it_lies_and_a_locked_one_refuses() {
+    // Without feedback it lies where it was told at once; with a move_time it is "moving" until that
+    // has passed; with one sensor (active: thrown) or two (one at each end), where they say, and a
+    // move they don't confirm within its move_time is said by on_mismatch; locked, it refuses.
+    let script = r#"$base = dcc_base(simulate: true)
+$plain = turnout(1)
+$plain.throw()
+print([$plain.feedback, $plain.state, $plain.commanded])
+$slow = turnout(2, move_time: 200)
+$slow.on_changed = function($state) {
+    print("slow: " + $state)
+}
+$slow.throw()
+print([$slow.feedback, $slow.state, $slow.commanded])
+$s = sensor(22)
+$one = turnout(3, sensor: $s, move_time: 300)
+print([$one.feedback, $one.state])
+$one.on_changed = function($state) {
+    print("one: " + $state)
+}
+$one.on_mismatch = function($wanted, $state) {
+    print("one mismatch: told " + $wanted + ", lies " + $state)
+}
+$one.throw()
+print([$one.state, $one.commanded])
+$s.simulate("active")
+print($one.state)
+$one.close()
+$a = sensor(30)
+$b = sensor(31)
+$two = turnout(4, sensors: [$a, $b])
+print([$two.feedback, $two.state, count($two.sensors)])
+$b.simulate("active")
+print($two.state)
+$a.simulate("active")
+$b.simulate("inactive")
+print($two.state)
+$plain.locked = true
+try {
+    $plain.close()
+} catch $e {
+    print($e.type + ": " + $e.message)
+}
+print($plain.state)
+foreach ["sensor: 3", "sensors: [$a]", "sensors: [$a, $a]", "move_time: -1"] as $bad {
+    try {
+        if $bad == "sensor: 3" {
+            turnout(9, sensor: 3)
+        } else if $bad == "sensors: [$a]" {
+            turnout(9, sensors: [$a])
+        } else if $bad == "sensors: [$a, $a]" {
+            turnout(9, sensors: [$a, $a])
+        } else {
+            turnout(9, move_time: -1)
+        }
+    } catch $e {
+        print($e.message)
+    }
+}
+"#;
+    let run = run("turnout-feedback", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        r#"["none", "thrown", "thrown"]
+["delay", "moving", "thrown"]
+["one_sensor", "closed"]
+["closed", "thrown"]
+thrown
+["two_sensors", "moving", 2]
+thrown
+closed
+hardware_error: turnout 1 (T1) is locked: it isn't closed until it is unlocked (locked = false)
+thrown
+turnout()'s `sensor:` is a sensor, not 3
+turnout()'s `sensors:` is a list of two sensors, the one active when it is closed, then the one active when it is thrown, not an array
+turnout()'s `sensors:` are two different sensors, one at each end of the throw
+turnout()'s `move_time:` is milliseconds, 0 to 60000, not -1
+slow: moving
+one: thrown
+slow: thrown
+one mismatch: told closed, lies thrown
+"#
+    );
+}

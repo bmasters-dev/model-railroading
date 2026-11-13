@@ -60,6 +60,12 @@ def main():
     restart_after = None
     restarted = False
     cvs = {}
+    # The pins' levels (2 to 69; a pin not given is high, as the pull-up holds it), the changes to make
+    # ("22:0@1.0": pin 22 low a second after the PC began watching it), and the pins watched (I), each
+    # with when it began.
+    levels = {}
+    changes = []
+    watched = {}
     args = sys.argv[1:]
     while args:
         a = args.pop(0)
@@ -79,6 +85,11 @@ def main():
             drawing = int(args.pop(0))
         elif a == "--restart-after":
             restart_after = float(args.pop(0))
+        elif a == "--pins":
+            for change in args.pop(0).split(","):
+                pin, rest = change.split(":")
+                level, at = rest.split("@")
+                changes.append((float(at), int(pin), int(level)))
         elif a == "--cvs":
             cvs = {int(k): int(v) for k, v in (pair.split("=") for pair in args.pop(0).split(","))}
     log = open(log_path, "a", buffering=1) if log_path else None
@@ -162,6 +173,20 @@ def main():
                     power = False
                     table.clear()
                     waiting.clear()
+                    watched.clear()
+                elif c == "I" and mode != "six":
+                    words = line[1:].split()
+                    pin = int(words[0])
+                    if pin < 2 or pin > 69 or pin in (3, 8, 9, 11, 12, 13, 54, 55, 58, 59):
+                        say(base_master, "ERR a sensor's pin is 2 to 69, but 3, 8, 9, 11, 12, 13, A0, A1, A4, A5 (the program's own)")
+                        continue
+                    if words[1] == "-":
+                        watched.pop(pin, None)
+                    else:
+                        watched.setdefault(pin, time.time())
+                        say(base_master, "OK")
+                        say(base_master, f"P {pin} {levels.get(pin, 1)}")
+                        continue
                 elif c == "?":
                     now_ma = drawing if shield and power else 0
                     say(base_master, f"STATE power {'on' if power else 'off'} places {len(table)} shield {'yes' if shield else 'no'} current {now_ma} limit {limit}")
@@ -249,10 +274,20 @@ def main():
                     else:
                         waiting.append(packet)
                 else:
-                    say(base_master, "ERR unknown: K, D, S, +, -, X, ?, or .")
+                    say(base_master, "ERR unknown: K, D, S, +, -, X, ?, or ." if mode == "six" else "ERR unknown: K, D, S, +, -, I, X, ?, or .")
                     continue
                 say(base_master, "OK")
         now = time.time()
+        # (The older program, 6, says its hello until the PC's first word, as a board starting does.)
+        if mode == "six" and first_word is None and now - last_old_hello > 0.5:
+            last_old_hello = now
+            say(base_master, "LEAH DCC BASE 6")
+        for change in [c for c in changes if c[1] in watched and now - watched[c[1]] >= c[0]]:
+            changes.remove(change)
+            _, pin, level = change
+            if levels.get(pin, 1) != level:
+                levels[pin] = level
+                say(base_master, f"P {pin} {level}")
         if mode in ("old", "reader") and now - last_old_hello > 0.5:
             last_old_hello = now
             say(base_master, "LEAH DCC BASE 5" if mode == "old" else "LEAH DCC READER 1")
@@ -275,7 +310,8 @@ def main():
             table.clear()
             waiting.clear()
             limit = 1500
-            say(base_master, "LEAH DCC BASE 6")
+            watched.clear()
+            say(base_master, "LEAH DCC BASE 7")
         if power and shield and now - last_a >= 0.5:
             last_a = now
             say(base_master, f"A {drawing}")

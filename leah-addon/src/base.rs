@@ -79,6 +79,10 @@ pub struct DccBase {
     events: Option<Events>,
     /// The phone throttle servers driving it, told when a locomotive changes (phone.rs).
     pub(crate) phone_servers: RefCell<Vec<Weak<crate::phone::PhoneServer>>>,
+    /// The sensors on its pins (sensor.rs), and the pins it watches (each with its pull-up or not),
+    /// sent again if the board starts again by itself.
+    sensors: RefCell<Vec<Weak<crate::sensor::Sensor>>>,
+    watches: RefCell<BTreeMap<u8, bool>>,
 }
 
 thread_local! {
@@ -178,6 +182,8 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
         lost: RefCell::new(None),
         events: None,
         phone_servers: RefCell::new(Vec::new()),
+        sensors: RefCell::new(Vec::new()),
+        watches: RefCell::new(BTreeMap::new()),
     };
     if simulate {
         if !call.args.is_empty() || reader_port.is_some() {
@@ -200,6 +206,10 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
         *base.link.borrow_mut() = Some(link);
     }
     let value = call.new_object_with_events(move |events| {
+        // (The link's thread posts the pins' changes to it: its sensors hear them while the script waits.)
+        if let Some(link) = base.link.borrow().as_ref() {
+            link.heard.lock().unwrap_or_else(|p| p.into_inner()).poster = Some(events.clone());
+        }
         base.events = Some(events);
         base
     });
@@ -217,7 +227,7 @@ impl DccBase {
         }
     }
 
-    fn simulated(&self) -> bool {
+    pub(crate) fn simulated(&self) -> bool {
         self.port.is_none()
     }
 
@@ -235,10 +245,10 @@ impl DccBase {
     /// Takes in what the boards said since last time: the packets the reader heard (the decoders'
     /// states, and `heard` on the packets sent), its timing, and the base station's own words (said
     /// as warnings; its safety turning the power off among them).
-    fn take_heard(&self, call: &Call) {
+    pub(crate) fn take_heard(&self, call: &Call) {
         let Some(link) = self.link.borrow().as_ref().map(|l| l.heard.clone()) else { return };
         let mut restarted = false;
-        let (packets, said, timing, gone, reader_gone) = {
+        let (packets, said, timing, gone, reader_gone, pins) = {
             let mut h = link.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(shield) = h.shield {
                 self.shield.set(shield);
@@ -252,8 +262,16 @@ impl DccBase {
                 self.hellos.set(h.base_hellos);
                 restarted = true;
             }
-            (std::mem::take(&mut h.packets), std::mem::take(&mut h.base_said), h.timing.clone(), h.gone.clone(), h.reader_gone.take())
+            (std::mem::take(&mut h.packets), std::mem::take(&mut h.base_said), h.timing.clone(), h.gone.clone(), h.reader_gone.take(), std::mem::take(&mut h.pins))
         };
+        if !pins.is_empty() {
+            let sensors: Vec<_> = self.sensors.borrow().iter().filter_map(Weak::upgrade).collect();
+            for (pin, high) in pins {
+                for s in sensors.iter().filter(|s| s.pin() == Some(pin)) {
+                    s.heard(high);
+                }
+            }
+        }
         if timing.is_some() {
             *self.timing.borrow_mut() = timing;
         }
@@ -307,6 +325,7 @@ impl DccBase {
             self.current.set(0);
             let mut lines = vec![format!("L {}", self.limit.get())];
             lines.extend(self.kept.borrow().iter().map(|(place, packet)| format!("K {place} {}", dcc::hex(packet))));
+            lines.extend(self.watches.borrow().iter().map(|(pin, pull)| format!("I {pin} {}", u8::from(*pull))));
             if let Some(link) = self.link.borrow().as_ref() {
                 for line in lines {
                     let _ = link.say(&line);
@@ -393,6 +412,25 @@ impl DccBase {
     }
 
     /// The base station made last, the one a locomotive or consist runs on by default.
+    /// Watches one of the board's pins for a sensor (on the simulated base station, only noted):
+    /// the board says its level at once and whenever it changes. A board running the older program
+    /// (6, from before sensors) is asked to load the new one.
+    pub(crate) fn watch_pin(&self, pin: u8, pull: bool, sensor: Weak<crate::sensor::Sensor>, what: &str) -> Result<(), Error> {
+        if !self.simulated() {
+            let older = self.link.borrow().as_ref().is_some_and(|l| l.heard.lock().unwrap_or_else(|p| p.into_inner()).base_hello.as_deref() == Some(board::OLDER_BASE_HELLO));
+            if older {
+                let port = self.port.as_deref().unwrap_or("");
+                return Err(hardware(format!("{what}: the base station on {port} runs Leah's older program, from before sensors: load the new one with load_dcc_program({port:?}, \"base\")")));
+            }
+            self.with_link(what, |l| l.say(&format!("I {pin} {}", u8::from(pull))))?;
+        }
+        self.watches.borrow_mut().insert(pin, pull);
+        let mut sensors = self.sensors.borrow_mut();
+        sensors.retain(|s| s.strong_count() > 0);
+        sensors.push(sensor);
+        Ok(())
+    }
+
     pub(crate) fn last() -> Option<Rc<DccBase>> {
         LAST.with(|l| l.borrow().upgrade())
     }
@@ -541,6 +579,10 @@ impl DccBase {
             link.close();
         }
         self.power_now(false);
+        // (Its sensors hear nothing more: a script without windows needn't wait for them.)
+        for s in self.sensors.borrow().iter().filter_map(Weak::upgrade) {
+            s.base_closed();
+        }
     }
 }
 
@@ -682,6 +724,12 @@ impl Object for DccBase {
                     Some(false) => Value::from("thrown"),
                     None => Value::Null,
                 })
+            }
+            // (Posted by the board's thread when a watched pin changed, the kit's level 6: not listed
+            // for scripts.)
+            "pins_changed" => {
+                self.take_heard(call);
+                Ok(Value::Null)
             }
             "clear_packets" => {
                 call.count_between(0, 0)?;
