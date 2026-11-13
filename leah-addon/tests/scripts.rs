@@ -3142,3 +3142,48 @@ print($run_c.start(wait: true))
     assert!(run.success, "{}", run.stderr);
     assert_eq!(run.stdout, "true\nfalse\nC waits\nC departs: West main held by Siding to West main, T1 thrown\n[\"arrived\", \"East main\", \"arrived\", \"West main\"]\n");
 }
+
+#[test]
+fn a_speedometer_times_a_train_between_two_sensors() {
+    // The simulated train at 50 centimeters a second (half of 100) comes out of the yard past West
+    // main's detector, then Middle's, 100 centimeters on (West main's length): about 50 cm/s, 157 km/h
+    // in HO.
+    let script = r#"$base = dcc_base(simulate: true)
+$yard = block("Yard")
+$west = block("West main", sensor: sensor(22))
+$middle = block("Middle", sensor: sensor(23))
+$east = block("East main", sensor: sensor(24))
+$plan = track_plan()
+$plan.connect($yard, $west)
+$plan.connect($west, $middle)
+$plan.connect($middle, $east)
+$sim = layout_simulator($plan, top_speed: 100)
+$loco = locomotive(3)
+$sim.add_train($loco, $yard, toward: $west, length: 10)
+$sim.on_train_stopped = function($l, $block) {
+    global $sim
+    $sim.stop()
+}
+$meter = speedometer($west.sensor, $middle.sensor, distance: 100, scale: "HO")
+$meter.on_measured = function($cm, $kmh, $mph) {
+    global $sim
+    print([$cm > 45 and $cm < 56, $kmh > 140 and $kmh < 175, $mph > 87 and $mph < 109])
+    $sim.stop()
+}
+$sim.start()
+$loco.speed_percent = 50
+print(scale_speed(30, scale: "N"))
+print(scale_speed(30))
+try {
+    scale_speed(30, scale: "HOn3")
+} catch $e {
+    print($e.message)
+}
+"#;
+    let run = run("speedometer", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        "[\"kmh\": 172.8, \"mph\": 107.4]\n[\"kmh\": 94.1, \"mph\": 58.5]\nscale_speed(): a scale is one of HO, N, O, S, TT, Z, OO, G, large (or its ratio, 87.1 for 1:87.1), not \"HOn3\"\n[true, true, true]\n"
+    );
+}
