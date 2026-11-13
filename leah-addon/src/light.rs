@@ -14,7 +14,7 @@ use leah_addon_kit::{Call, Error, Events, Object, Value};
 use crate::base::{describe, DccBase};
 use crate::block::Block;
 use crate::dcc;
-use crate::sensor::{as_follower, Follower, Sensor};
+use crate::sensor::{as_follower, Follower, Followers, Sensor};
 use crate::turnout::Turnout;
 
 const PROPS: &[&str] = &["address", "name", "on", "inverted", "following", "base"];
@@ -41,6 +41,8 @@ pub struct Light {
     pulses: Cell<u64>,
     /// Itself, for following (set as it is made).
     me: RefCell<Weak<Light>>,
+    /// The track diagrams showing it.
+    pub(crate) followers: Followers,
     events: Events,
 }
 
@@ -66,7 +68,7 @@ pub fn new_light(call: &mut Call) -> Result<Value, Error> {
         None => DccBase::last().ok_or_else(|| Error::new("hardware_error", format!("{what}: there is no base station: make one first, dcc_base(\"/dev/ttyACM0\") or dcc_base(simulate: true)")))?,
         Some(v) => call.own_option::<DccBase>("base").ok_or_else(|| Error::type_error(format!("{what}'s `base:` is a dcc_base, not {}", describe(v))).at(call.option_line("base")))?,
     };
-    let value = call.new_object_with_events(|events| Light { base, address, name, inverted, on: Cell::new(None), following: RefCell::new(None), pulses: Cell::new(0), me: RefCell::new(Weak::new()), events });
+    let value = call.new_object_with_events(|events| Light { base, address, name, inverted, on: Cell::new(None), following: RefCell::new(None), pulses: Cell::new(0), me: RefCell::new(Weak::new()), followers: Followers::default(), events });
     if let Some(made) = call.own_value::<Light>(&value) {
         *made.me.borrow_mut() = Rc::downgrade(&made);
     }
@@ -86,6 +88,13 @@ impl Light {
             pairs.push(("when", Value::from(when)));
         }
         Value::map(pairs)
+    }
+
+    /// Switched the other way, as `toggle()` does (a pulse under way is over).
+    pub(crate) fn toggle_now(&self, call: &Call) -> Result<(), Error> {
+        self.pulses.set(self.pulses.get() + 1);
+        self.events.keep_working(false);
+        self.switch(self.on.get() != Some(true), call)
     }
 
     pub(crate) fn is_on(&self) -> bool {
@@ -153,6 +162,7 @@ impl Light {
         self.base.send_now(dcc::accessory(self.address, output, true), format!("light {} ({}): {}", self.address, self.name, if on { "on" } else { "off" }), 2, call)?;
         if self.on.replace(Some(on)) != Some(on) {
             self.events.fire("on_changed", vec![Value::from(on)]);
+            self.followers.tell(call);
         }
         Ok(())
     }

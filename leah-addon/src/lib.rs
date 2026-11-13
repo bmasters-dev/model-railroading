@@ -13,6 +13,7 @@ mod board;
 mod consist;
 mod dcc;
 mod definitions;
+mod diagram;
 mod layout;
 mod light;
 mod makers;
@@ -74,6 +75,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("layout", &[], layout::new_layout as Function),
             ("route", &[], route::new_route as Function),
             ("track_plan", &[], plan::new_plan as Function),
+            ("track_diagram", &[], diagram::new_diagram as Function),
             ("wait_for", &[], wait::wait_for as Function),
             ("wait_for_any", &[], wait::wait_for_any as Function),
             ("write_layout_file", &[Needs::Files], layout::write_layout_file as Function),
@@ -98,7 +100,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("track_plan", &["blocks", "connections"], &["connect", "set_cost", "cost", "neighbours", "find_path"], &[]),
             ("phone_throttle_server", &["name", "port", "running", "clients", "heartbeat", "turnouts", "routes", "clock", "base", "roster"], &["add_turnout", "set_turnout", "remove_turnout", "add_route", "set_route", "remove_route", "set_clock", "stop_clock", "message", "close"], &["on_client", "on_client_left", "on_turnout_request", "on_route_request"]),
         ],
-        controls: vec![],
+        controls: vec![("track_diagram", diagram::PROPS, diagram::FUNCS, diagram::EVENTS, (400, 240))],
     })
 }
 

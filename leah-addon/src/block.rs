@@ -77,6 +77,12 @@ impl Block {
         Value::map(pairs)
     }
 
+    /// Held by a route, or let go: its followers (a track diagram) told.
+    pub(crate) fn reserve_for(&self, route: Option<&str>, call: &Call) {
+        *self.reserved_by.borrow_mut() = route.map(str::to_string);
+        self.followers.tell(call);
+    }
+
     pub(crate) fn sensor(&self) -> Option<&Rc<Sensor>> {
         self.sensor.as_ref()
     }

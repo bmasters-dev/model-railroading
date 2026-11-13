@@ -21,3 +21,11 @@ leah-addon-kit = { path = "../../Leah_Dev/kit" }
 libc = "0.2"
 # The phone throttle server announced on the local network (mDNS, so phones list it by name).
 mdns-sd = "=0.21.6"
+# The track diagram control (a window's control, the kit's level 5): GTK, as Leah's own windows use it.
+# Only with the `windows` feature (on by default), so a build for a computer without a screen can
+# leave GTK out.
+gtk4 = { version = "0.11.5", features = ["v4_14"], optional = true }
+
+[features]
+default = ["windows"]
+windows = ["dep:gtk4"]

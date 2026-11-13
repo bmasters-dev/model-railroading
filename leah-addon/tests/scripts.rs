@@ -2898,3 +2898,12 @@ print($server.port)
     let (ok, err) = run.end();
     assert!(ok, "{err}");
 }
+
+#[test]
+fn the_layout_panel_lines_a_path_and_runs_a_train_along_it() {
+    // On the simulated base station: Connect, power on, West main then East main picked (entry and
+    // exit), a train run along the path; the path's first blocks let go as the train clears them.
+    let driver = "call_later(300, function() {\n    global $connect, $power, $panel, $blocks\n    $connect.click()\n    $power.click()\n    $panel.pick_block($blocks[0])\n    $panel.pick_block($blocks[3])\n    call_later(200, function() {\n        global $state, $blocks, $run\n        print($state.text)\n        print([$blocks[1].reserved_by, $blocks[2].reserved])\n        $run.click()\n        call_later(6500, function() {\n            global $blocks\n            print([$blocks[0].reserved, $blocks[1].reserved, $blocks[3].reserved, $blocks[3].occupied])\n            quit()\n        })\n    })\n})\n";
+    let Some(printed) = run_example_on_screen_with("layout-panel", "layout_panel.leah", None, driver, 15000, &[]) else { return };
+    assert!(printed.contains("Lined and held: West main to East main (3 blocks)\n[\"West main to East main\", false]\n[false, false, false, false]\n"), "{printed}");
+}

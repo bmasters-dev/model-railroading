@@ -224,7 +224,11 @@ impl Route {
 
     /// Holds its blocks for one train and locks its turnouts: false (and a warning saying why) when a
     /// block is occupied or held by another route.
-    fn reserve(&self, call: &Call) -> bool {
+    pub(crate) fn is_reserved(&self) -> bool {
+        self.held.borrow().iter().any(|(still, _)| *still)
+    }
+
+    pub(crate) fn reserve(&self, call: &Call) -> bool {
         if self.blocks.is_empty() {
             call.warn(format!("route {} has no blocks to hold (a route found by a track plan's find_path has)", self.name));
             return false;
@@ -249,25 +253,25 @@ impl Route {
             call.warn(format!("route {} can't be reserved: turnout {} is locked the other way", self.name, t.name()));
             return false;
         }
-        for b in &self.blocks {
-            *b.reserved_by.borrow_mut() = Some(self.name.clone());
-        }
         *self.held.borrow_mut() = vec![(true, false); self.blocks.len()];
         for (t, _) in &self.settings {
             t.lock(true);
+        }
+        for b in &self.blocks {
+            b.reserve_for(Some(&self.name), call);
         }
         true
     }
 
     /// Lets go of its blocks still held and unlocks its turnouts.
-    fn release(&self) {
+    fn release(&self, call: &Call) {
         let held = std::mem::take(&mut *self.held.borrow_mut());
         if held.is_empty() {
             return;
         }
         for (b, (still, _)) in self.blocks.iter().zip(held) {
             if still && b.reserved_by.borrow().as_deref() == Some(self.name.as_str()) {
-                b.reserved_by.borrow_mut().take();
+                b.reserve_for(None, call);
             }
         }
         for (t, _) in &self.settings {
@@ -278,7 +282,7 @@ impl Route {
 }
 
 impl Follower for Route {
-    fn followed_changed(&self, _call: &Call) {
+    fn followed_changed(&self, call: &Call) {
         let aligned = self.lies_its_way();
         if self.aligned.replace(aligned) != aligned {
             // (The phones showing it are told: active while it is aligned.)
@@ -310,11 +314,11 @@ impl Follower for Route {
         for i in &released {
             let b = &self.blocks[*i];
             if b.reserved_by.borrow().as_deref() == Some(self.name.as_str()) {
-                b.reserved_by.borrow_mut().take();
+                b.reserve_for(None, call);
             }
         }
         if !released.is_empty() && self.held.borrow().iter().all(|(still, _)| !still) {
-            self.release();
+            self.release(call);
         }
     }
 }
@@ -339,7 +343,7 @@ impl Object for Route {
                 }
                 Value::from(self.lies_its_way())
             }
-            "reserved" => Value::from(self.held.borrow().iter().any(|(still, _)| *still)),
+            "reserved" => Value::from(self.is_reserved()),
             other => return Err(call.unknown_property("route", other, PROPS)),
         })
     }
@@ -369,7 +373,7 @@ impl Object for Route {
             "release" => {
                 call.count_between(0, 0)?;
                 call.only_options(&[])?;
-                self.release();
+                self.release(call);
                 Ok(Value::Null)
             }
             // (Posted by the thread a step waits on, the kit's level 6: not listed for scripts.)

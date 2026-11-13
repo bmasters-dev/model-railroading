@@ -64,6 +64,73 @@ impl TrackPlan {
         }
     }
 
+    /// The cheapest path, as a route (`Value::Null` when there is none): `find_path`'s work, for the
+    /// track diagram's entry and exit too.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn find(&self, call: &mut Call, from: &Rc<Block>, to: &Rc<Block>, via: &[Rc<Block>], avoid: &[Rc<Block>], avoid_occupied: bool, most: usize, delay: i64) -> Result<Value, Error> {
+        // (Blocks not in the plan: no path.)
+        let mut stops = vec![from];
+        stops.extend(via.iter());
+        stops.push(to);
+        let mut places = Vec::new();
+        for b in &stops {
+            match self.found(b) {
+                Some(i) => places.push(i),
+                None => return Ok(Value::Null),
+            }
+        }
+        let blocks = self.blocks.borrow().clone();
+        for b in &blocks {
+            if let Some(s) = b.sensor() {
+                s.catch_up(call);
+            }
+        }
+        let mut banned: Vec<bool> = blocks.iter().map(|b| {
+            avoid.iter().any(|a| Rc::ptr_eq(a, b)) || b.reserved_by.borrow().is_some() || (avoid_occupied && b.is_occupied() == Some(true))
+        }).collect();
+        // (The train's own block, where it starts, is occupied by it.)
+        banned[places[0]] = false;
+        let mut path_blocks = vec![places[0]];
+        let mut path_joints = Vec::new();
+        let mut ways: HashMap<*const Turnout, bool> = HashMap::new();
+        for leg in places.windows(2) {
+            banned[leg[1]] = avoid.iter().any(|a| Rc::ptr_eq(a, &blocks[leg[1]]));
+            if banned[leg[1]] {
+                return Ok(Value::Null);
+            }
+            let Some((bs, js)) = self.search(leg[0], leg[1], &banned, &ways, most.saturating_sub(path_blocks.len()) + 1) else {
+                return Ok(Value::Null);
+            };
+            let joints = self.joints.borrow();
+            for j in &js {
+                if let Some((t, closed)) = &joints[*j].turnout
+                    && ways.insert(Rc::as_ptr(t), *closed).is_some_and(|w| w != *closed)
+                {
+                    return Ok(Value::Null);
+                }
+            }
+            // (The blocks passed can't be passed again on the next leg.)
+            for b in &bs {
+                banned[*b] = true;
+            }
+            path_blocks.extend(bs.into_iter().skip(1));
+            path_joints.extend(js);
+        }
+        let joints = self.joints.borrow();
+        let mut settings: Vec<(Rc<Turnout>, Way)> = Vec::new();
+        for j in &path_joints {
+            if let Some((t, closed)) = &joints[*j].turnout
+                && !settings.iter().any(|(s, _)| Rc::ptr_eq(s, t))
+            {
+                settings.push((t.clone(), if *closed { Way::Closed } else { Way::Thrown }));
+            }
+        }
+        let route_blocks: Vec<Rc<Block>> = path_blocks.iter().map(|i| blocks[*i].clone()).collect();
+        let name = format!("{} to {}", from.name(), to.name());
+        drop(joints);
+        Ok(route::make(call, name, settings, route_blocks, delay))
+    }
+
     fn found(&self, b: &Rc<Block>) -> Option<usize> {
         self.blocks.borrow().iter().position(|x| Rc::ptr_eq(x, b))
     }
@@ -270,67 +337,7 @@ impl Object for TrackPlan {
                         _ => return Err(Error::range_error(format!("{what}'s `delay:` is the milliseconds between two turnouts' moves, 0 to 10000, not {}", describe(v))).at(call.option_line("delay"))),
                     },
                 };
-                // (Blocks not in the plan: no path.)
-                let mut stops = vec![&from];
-                stops.extend(via.iter());
-                stops.push(&to);
-                let mut places = Vec::new();
-                for b in &stops {
-                    match self.found(b) {
-                        Some(i) => places.push(i),
-                        None => return Ok(Value::Null),
-                    }
-                }
-                let blocks = self.blocks.borrow().clone();
-                for b in &blocks {
-                    if let Some(s) = b.sensor() {
-                        s.catch_up(call);
-                    }
-                }
-                let mut banned: Vec<bool> = blocks.iter().map(|b| {
-                    avoid.iter().any(|a| Rc::ptr_eq(a, b)) || b.reserved_by.borrow().is_some() || (avoid_occupied && b.is_occupied() == Some(true))
-                }).collect();
-                // (The train's own block, where it starts, is occupied by it.)
-                banned[places[0]] = false;
-                let mut path_blocks = vec![places[0]];
-                let mut path_joints = Vec::new();
-                let mut ways: HashMap<*const Turnout, bool> = HashMap::new();
-                for leg in places.windows(2) {
-                    banned[leg[1]] = avoid.iter().any(|a| Rc::ptr_eq(a, &blocks[leg[1]]));
-                    if banned[leg[1]] {
-                        return Ok(Value::Null);
-                    }
-                    let Some((bs, js)) = self.search(leg[0], leg[1], &banned, &ways, most.saturating_sub(path_blocks.len()) + 1) else {
-                        return Ok(Value::Null);
-                    };
-                    let joints = self.joints.borrow();
-                    for j in &js {
-                        if let Some((t, closed)) = &joints[*j].turnout
-                            && ways.insert(Rc::as_ptr(t), *closed).is_some_and(|w| w != *closed)
-                        {
-                            return Ok(Value::Null);
-                        }
-                    }
-                    // (The blocks passed can't be passed again on the next leg.)
-                    for b in &bs {
-                        banned[*b] = true;
-                    }
-                    path_blocks.extend(bs.into_iter().skip(1));
-                    path_joints.extend(js);
-                }
-                let joints = self.joints.borrow();
-                let mut settings: Vec<(Rc<Turnout>, Way)> = Vec::new();
-                for j in &path_joints {
-                    if let Some((t, closed)) = &joints[*j].turnout
-                        && !settings.iter().any(|(s, _)| Rc::ptr_eq(s, t))
-                    {
-                        settings.push((t.clone(), if *closed { Way::Closed } else { Way::Thrown }));
-                    }
-                }
-                let route_blocks: Vec<Rc<Block>> = path_blocks.iter().map(|i| blocks[*i].clone()).collect();
-                let name = format!("{} to {}", from.name(), to.name());
-                drop(joints);
-                Ok(route::make(call, name, settings, route_blocks, delay))
+                self.find(call, &from, &to, &via, &avoid, avoid_occupied, most, delay)
             }
             other => Err(call.unknown_function("track_plan", other, FUNCS)),
         }

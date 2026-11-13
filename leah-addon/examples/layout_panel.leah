@@ -1,0 +1,179 @@
+` A layout panel (design/model_railroading.md, "Phase C"): a passing siding drawn as a track diagram,
+` its two turnouts on accessory decoder outputs 1 and 2 (such as an NCE Switch8's first two), and a
+` block detector for each of its four blocks on the base station board's pins 22 to 25 (wired or not:
+` without detectors, the blocks stay free). Choose the base station (or the simulated one), then
+` Connect and switch the track power on.
+`
+` On the panel: click a turnout's points to throw it; click one block, then another, to line and hold
+` the path between them (entry and exit), which goes around occupied track and lets each block go as
+` the train clears it. On the simulated base station, "Run a train" sends an imaginary train along the
+` last path lined, block by block.
+
+$base = null
+$plan = null
+$blocks = []
+$detectors = []
+$last_route = null
+
+$win = window(title: "Layout panel", width: 640, height: 330, minimum_width: 600, minimum_height: 300)
+
+$port_label = label(left: 20, top: 24, width: 100, text: "Base station:")
+$win.add($port_label)
+$port = popup_menu(left: 120, top: 20, width: 260)
+$win.add($port)
+$connect = button(left: 392, top: 18, width: 110, height: 34, text: "Connect")
+$win.add($connect)
+$power = button(left: 510, top: 18, width: 110, height: 34, text: "Power on", enabled: false, lock_right: true)
+$win.add($power)
+
+$panel = track_diagram(left: 20, top: 66, width: 600, height: 170, lock_right: true, lock_bottom: true)
+$win.add($panel)
+
+$state = label(left: 20, top: 248, width: 600, lock_right: true, lock_top: false, lock_bottom: true, text: "Not connected")
+$win.add($state)
+$run = button(left: 20, top: 278, width: 140, height: 34, text: "Run a train", enabled: false, lock_top: false, lock_bottom: true)
+$win.add($run)
+$clear = button(left: 170, top: 278, width: 140, height: 34, text: "Let go of paths", enabled: false, lock_top: false, lock_bottom: true)
+$win.add($clear)
+
+` The layout: four blocks, two turnouts, and how they join.
+function build_layout() {
+    global $base, $plan, $blocks, $detectors, $panel
+    $west_points = turnout(1, name: "West points")
+    $east_points = turnout(2, name: "East points")
+    $names = ["West main", "Main", "Siding", "East main"]
+    $blocks = []
+    $detectors = []
+    $note = ""
+    foreach $names as $i: $name {
+        ` (A board still on Leah's older program has no sensors: the blocks are made without them.)
+        $detector = null
+        try {
+            $detector = sensor(22 + $i, name: $name + " detector", inactive_delay: 1500)
+        } catch $e {
+            $note = $e.message
+        }
+        $detectors[] = $detector
+        $blocks[] = block($name, sensor: $detector)
+    }
+    $plan = track_plan()
+    $plan.connect($blocks[0], $blocks[1], turnout: $west_points, position: "closed")
+    $plan.connect($blocks[0], $blocks[2], turnout: $west_points, position: "thrown")
+    $plan.connect($blocks[1], $blocks[3], turnout: $east_points, position: "closed")
+    $plan.connect($blocks[2], $blocks[3], turnout: $east_points, position: "thrown")
+    $plan.set_cost($blocks[2], 3)
+    $panel.clear()
+    $panel.plan = $plan
+    $panel.add_track($blocks[0], [[1, 5], [7, 5]])
+    $panel.add_turnout($west_points, [7, 5], closed_to: [9, 5], thrown_to: [9, 3], block: $blocks[0])
+    $panel.add_track($blocks[1], [[9, 5], [20, 5]])
+    $panel.add_track($blocks[2], [[9, 3], [20, 3]])
+    $panel.add_turnout($east_points, [22, 5], closed_to: [20, 5], thrown_to: [20, 3], block: $blocks[3])
+    $panel.add_track($blocks[3], [[22, 5], [29, 5]])
+    $panel.add_label("Click a turnout to throw it; a block, then another, to line a path", [15, 8])
+    return $note
+}
+
+function connected($on) {
+    global $connect, $power, $run, $clear, $port, $base
+    $connect.text = if $on then "Disconnect" else "Connect"
+    $power.enabled = $on
+    $clear.enabled = $on
+    $run.enabled = $on and $base != null and $base.simulate
+    $port.enabled = not $on
+}
+
+$connect.on_click = function() {
+    global $base, $port, $state, $panel
+    if $base != null {
+        $base.close()
+        $base = null
+        $panel.clear()
+        $state.text = "Not connected"
+        connected(false)
+        return
+    }
+    try {
+        $base = if $port.selected_row_tag == "simulate" then dcc_base(simulate: true) else dcc_base($port.selected_row_tag)
+        $note = build_layout()
+    } catch $e {
+        $state.text = $e.message
+        if $base != null {
+            $base.close()
+            $base = null
+        }
+        return
+    }
+    $state.text = if $note == "" then "Connected. Switch the track power on: the turnouts move only with it." else "Connected, without block detectors: " + $note
+    connected(true)
+}
+
+$power.on_click = function() {
+    global $base, $power
+    $base.power = not $base.power
+    $power.text = if $base.power then "Power off" else "Power on"
+}
+
+$panel.on_route_set = function($route) {
+    global $state, $last_route
+    $last_route = $route
+    $state.text = "Lined and held: " + $route.name + " (" + to_text(count($route.blocks)) + " blocks)"
+}
+$panel.on_route_refused = function($from, $to) {
+    global $state
+    $state.text = "No clear path from " + $from.name + " to " + $to.name + ": occupied, held, or locked"
+}
+$panel.on_block_clicked = function($block) {
+    global $state, $panel
+    if $panel.entry != null {
+        $state.text = "Entry: " + $panel.entry.name + ". Now click the exit block."
+    }
+}
+
+$clear.on_click = function() {
+    global $last_route, $state, $plan, $blocks
+    ` (Every block held is let go: one route at a time on this small layout.)
+    if $last_route != null {
+        $last_route.release()
+    }
+    $state.text = "Paths let go"
+}
+
+` An imaginary train along the last path lined: each block occupied in turn, the one behind cleared.
+$run.on_click = function() {
+    global $last_route, $state
+    if $last_route == null or not $last_route.reserved {
+        $state.text = "Line a path first: click a block, then another"
+        return
+    }
+    $state.text = "A train runs " + $last_route.name
+    step_train($last_route.blocks, 0)
+}
+
+function step_train($path, $i) {
+    if $i > count($path) {
+        return
+    }
+    if $i < count($path) {
+        $path[$i].sensor.simulate("active")
+    }
+    if $i > 0 {
+        $path[$i - 1].sensor.simulate("inactive")
+    }
+    ` (The panel shows each block as its detector says.)
+    call_later(900, function() {
+        step_train($path, $i + 1)
+    })
+}
+
+$port.add_row("Simulated (no board)", tag: "simulate")
+foreach dcc_ports() as $p {
+    $port.add_row($p["port"] + ": " + $p["name"], tag: $p["port"])
+    if starts_with($p["name"], "Arduino Mega") {
+        $port.selected_row_index = $port.row_count - 1
+    }
+}
+if $port.selected_row_index < 0 {
+    $port.selected_row_index = 0
+}
+$win.show()

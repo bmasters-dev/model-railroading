@@ -152,6 +152,13 @@ $icons["track_plan"] = function() {
     ic.circle(11.5, 10.5, 4, 4, ic.accent)
     ic.circle(11.5, 2.5, 4, 4, ic.accent)
 }
+` A track diagram: a dark panel with a siding, the main line lit occupied.
+$icons["track_diagram"] = function() {
+    ic.rbox(0.5, 2, 15, 12, "#2B2F36", ic.ink, 1.5)
+    ic.stroke([[2, 10], [14, 10]], ic.mid, 1.5)
+    ic.stroke([[4, 10], [6, 6], [10, 6], [12, 10]], ic.mid, 1.5)
+    ic.stroke([[6, 10], [10, 10]], ic.red, 1.5)
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)

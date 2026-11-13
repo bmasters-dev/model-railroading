@@ -26,8 +26,8 @@ Code samples
 ```leah          runs; if "Output:" and a code block follow, the output must match exactly
 ```leah check    only checked for mistakes (samples that need a board, a decoder, or the user's files)
 
-They run with Leah (LEAH, else ~/Leah_Dev/target/debug/leah when it is there, else `leah` on the
-PATH) and this addon as built (ADDON_FILE, else target/debug/libleah_addon_model_railroading.so: run
+They run with Leah (LEAH, else ~/Leah_Dev/target/all_addons/debug/leah or ~/Leah_Dev/target/debug/leah
+when one is there, else `leah` on the PATH) and this addon as built (ADDON_FILE, else target/debug/libleah_addon_model_railroading.so: run
 `cargo build` first), one at a time, each in a folder of its own, with no screen.
 """
 
@@ -53,9 +53,10 @@ def leah_program():
     given = os.environ.get("LEAH")
     if given:
         return given
-    dev = Path.home() / "Leah_Dev" / "target" / "debug" / "leah"
-    if dev.exists():
-        return str(dev)
+    # (Leah's development build with every addon first: the pages' samples may open windows.)
+    for dev in (Path.home() / "Leah_Dev" / "target" / "all_addons" / "debug" / "leah", Path.home() / "Leah_Dev" / "target" / "debug" / "leah"):
+        if dev.exists():
+            return str(dev)
     found = shutil.which("leah")
     if not found:
         sys.exit("docs: there is no Leah to run the samples with (set LEAH)")
