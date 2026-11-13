@@ -37,6 +37,8 @@ fn needs(name: &str, options: &[(String, Value, i64)]) -> Vec<Needs> {
 /// The addon's entry point (Leah's addon interface).
 #[unsafe(no_mangle)]
 pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::AddonTable {
+    // (An outside program it needs that isn't a Debian package, shown by `leah --doctor`, #32.)
+    leah_addon_kit::needs_programs(&[("arduino-cli", "building and loading the base station's board program", "https://arduino.github.io/arduino-cli/latest/installation/")]);
     leah_addon_kit::raw::entry(level, || leah_addon_kit::Definition {
         name: "model_railroading",
         version: env!("CARGO_PKG_VERSION"),

@@ -114,10 +114,13 @@ struct Finish {
 
 impl Drop for Finish {
     fn drop(&mut self) {
-        self.events.keep_running(false);
-        drop(self.turn.take());
+        // (Not busy first, so the event's function may start the next; then the last event with its
+        // "no more" in one hand-over (fire_last, Leah's kit level 7, #31); then the programming track let
+        // go of: a reading started after that says so later, the newer word.)
         lock(&self.known).busy = false;
-        self.events.fire("on_done", vec![Value::from(self.what), self.error.take().map_or(Value::Null, Value::from)]);
+        let turn = self.turn.take();
+        self.events.fire_last("on_done", vec![Value::from(self.what), self.error.take().map_or(Value::Null, Value::from)]);
+        drop(turn);
     }
 }
 

@@ -509,12 +509,11 @@ impl DccBase {
                 Ok(v) => (v, Value::Null),
                 Err(e) => (Value::Null, Value::from(e)),
             };
-            // ("No more" first, then the programming track let go of, then the event: a reading
-            // started after it (by the event's function, or any other) must be the newer word; Leah
-            // keeps the script waiting for the event meanwhile.)
-            events.keep_running(false);
+            // (The last event with its "no more" in one hand-over (fire_last, Leah's kit level 7,
+            // #31), then the programming track let go of: a reading started after it (by the event's
+            // function, or any other) is the newer word.)
+            events.fire_last(event, vec![what, value, error]);
             drop(turn);
-            events.fire(event, vec![what, value, error]);
         });
     }
 
@@ -1665,8 +1664,8 @@ pub fn load_dcc_program(call: &mut Call) -> Result<Value, Error> {
                     let mut s = thread_state.lock().unwrap_or_else(|x| x.into_inner());
                     *s = board::JobState { finished: true, succeeded, message: message.clone() };
                 }
-                events.fire("on_finished", vec![Value::from(succeeded), Value::from(message)]);
-                events.keep_running(false);
+                // (The last event and its "no more" together, #31.)
+                events.fire_last("on_finished", vec![Value::from(succeeded), Value::from(message)]);
             }
         });
         if let Err(e) = spawned {
