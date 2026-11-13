@@ -100,4 +100,4 @@ A button was clicked: the turnout, light, route, or sensor it is for (the turnou
 
 ## See also
 
-[track_diagram](ref:track_diagram), [layout](ref:layout)
+[layout_button](ref:layout_button), [track_diagram](ref:track_diagram), [layout](ref:layout)

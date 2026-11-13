@@ -194,6 +194,12 @@ $icons["switchboard"] = function() {
         ic.fill($p[0], $p[1], 4, 5, if $i == 0 or $i == 4 then ic.green else ic.edge)
     }
 }
+` A layout button: one button, lit, with a turnout drawn on it.
+$icons["layout_button"] = function() {
+    ic.rfill(1, 3, 14, 10, ic.green, 2)
+    ic.stroke([[3, 10.5], [13, 10.5]], ic.face, 1.5)
+    ic.stroke([[6, 10.5], [12, 5.5]], ic.face, 1.5)
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)

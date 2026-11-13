@@ -82,6 +82,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("track_plan", &[], plan::new_plan as Function),
             ("track_diagram", &[], diagram::new_diagram as Function),
             ("switchboard", &[], switchboard::new_switchboard as Function),
+            ("layout_button", &[], switchboard::new_switchboard as Function),
             ("fast_clock", &[], clock::new_clock as Function),
             ("layout_simulator", &[], sim::new_simulator as Function),
             ("auto_train", &[], auto::new_auto_train as Function),
@@ -115,7 +116,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("fast_clock", &["time", "rate", "running", "alarms", "hour", "minute"], &["start", "stop", "set_time"], &["on_minute", "on_alarm"]),
             ("phone_throttle_server", &["name", "port", "running", "clients", "heartbeat", "turnouts", "routes", "clock", "base", "roster"], &["add_turnout", "set_turnout", "remove_turnout", "add_route", "set_route", "remove_route", "set_clock", "stop_clock", "message", "close"], &["on_client", "on_client_left", "on_turnout_request", "on_route_request"]),
         ],
-        controls: vec![("track_diagram", diagram::PROPS, diagram::FUNCS, diagram::EVENTS, (400, 240)), ("switchboard", switchboard::PROPS, switchboard::FUNCS, switchboard::EVENTS, (400, 160))],
+        controls: vec![("track_diagram", diagram::PROPS, diagram::FUNCS, diagram::EVENTS, (400, 240)), ("switchboard", switchboard::PROPS, switchboard::FUNCS, switchboard::EVENTS, (400, 160)), ("layout_button", switchboard::BUTTON_PROPS, switchboard::BUTTON_FUNCS, switchboard::EVENTS, (110, 44))],
     })
 }
 

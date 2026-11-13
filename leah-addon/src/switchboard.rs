@@ -22,6 +22,10 @@ use crate::turnout::Turnout;
 pub(crate) const PROPS: &[&str] = &["columns", "count"];
 pub(crate) const FUNCS: &[&str] = &["add", "add_layout", "clear"];
 pub(crate) const EVENTS: &[&str] = &["on_clicked"];
+/// A one-button switchboard, bound to one object: for a window designer placing panel controls one by
+/// one (a turnout's lever, a sensor's lamp, a route's button).
+pub(crate) const BUTTON_PROPS: &[&str] = &["object"];
+pub(crate) const BUTTON_FUNCS: &[&str] = &[];
 
 #[derive(Clone)]
 enum Shown {
@@ -55,6 +59,8 @@ impl Shown {
 }
 
 pub struct Switchboard {
+    /// A layout_button (one object, `object`), not a switchboard.
+    single: bool,
     shown: RefCell<Vec<Shown>>,
     columns: Cell<i64>,
     me: RefCell<Weak<Switchboard>>,
@@ -88,7 +94,8 @@ pub fn new_switchboard(call: &mut Call) -> Result<Value, Error> {
             css.load_from_string(".leah-switch-on { background: #2DA44E; color: white; } .leah-switch-off { background: #5B6779; color: white; } .leah-switch-unknown { background: #A9B3C1; color: #20242B; }");
             gtk4::style_context_add_provider_for_display(&display, &css, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
-        let value = call.new_object_with_events(|events| Switchboard { shown: RefCell::new(Vec::new()), columns: Cell::new(4), me: RefCell::new(Weak::new()), events, grid, buttons: RefCell::new(Vec::new()) });
+        let single = call.name == "layout_button";
+        let value = call.new_object_with_events(|events| Switchboard { single, shown: RefCell::new(Vec::new()), columns: Cell::new(4), me: RefCell::new(Weak::new()), events, grid, buttons: RefCell::new(Vec::new()) });
         if let Some(made) = call.own_value::<Switchboard>(&value) {
             *made.me.borrow_mut() = Rc::downgrade(&made);
         }
@@ -205,10 +212,22 @@ impl Follower for Switchboard {
 
 impl Object for Switchboard {
     fn kind(&self) -> &str {
-        "switchboard"
+        if self.single { "layout_button" } else { "switchboard" }
     }
 
     fn get(&self, property: &str, call: &mut Call) -> Result<Value, Error> {
+        if self.single {
+            return match property {
+                "object" => Ok(match self.shown.borrow().first() {
+                    Some(Shown::Turnout(t)) => call.object_value(t),
+                    Some(Shown::Light(l)) => call.object_value(l),
+                    Some(Shown::Route(r)) => call.object_value(r),
+                    Some(Shown::Sensor(s)) => call.object_value(s),
+                    None => Value::Null,
+                }),
+                other => Err(call.unknown_property("layout_button", other, BUTTON_PROPS)),
+            };
+        }
         Ok(match property {
             "columns" => Value::from(self.columns.get()),
             "count" => Value::from(self.shown.borrow().len() as i64),
@@ -217,6 +236,20 @@ impl Object for Switchboard {
     }
 
     fn set(&self, property: &str, value: Value, call: &mut Call) -> Result<(), Error> {
+        if self.single {
+            return match property {
+                "object" => {
+                    self.shown.borrow_mut().clear();
+                    if !matches!(value, Value::Null) {
+                        self.add_one(call, &value, "a layout_button's `object`")?;
+                    }
+                    self.columns.set(1);
+                    self.rebuild();
+                    Ok(())
+                }
+                other => Err(call.unknown_property("layout_button", other, BUTTON_PROPS)),
+            };
+        }
         match property {
             "columns" => match value.as_int() {
                 Some(n @ 1..=50) => {
@@ -233,6 +266,9 @@ impl Object for Switchboard {
 
     fn call(&self, function: &str, call: &mut Call) -> Result<Value, Error> {
         let what = format!("switchboard.{function}()");
+        if self.single && function != "switchboard_click" {
+            return Err(call.unknown_function("layout_button", function, BUTTON_FUNCS));
+        }
         match function {
             "add" => {
                 if call.args.is_empty() {

@@ -3280,3 +3280,10 @@ fn the_switchboard_sample_shows_eight_turnouts() {
     let Some(printed) = run_example_on_screen_with("switchboard-sample", "switchboard.leah", None, driver, 10000, &[]) else { return };
     assert!(printed.contains("[8, \"thrown\", \"thrown\", true]\n"), "{printed}");
 }
+
+#[test]
+fn a_layout_button_shows_one_object() {
+    let driver = "call_later(300, function() {\n    global $connect, $win, $turnouts\n    $connect.click()\n    $b = layout_button(left: 20, top: 220, width: 110, height: 40, object: $turnouts[0])\n    $win.add($b)\n    print($b.object.name)\n    $b.object = null\n    print($b.object)\n    try {\n        $b.object = 5\n    } catch $e {\n        print($e.type)\n    }\n    quit()\n})\n";
+    let Some(printed) = run_example_on_screen_with("layout-button", "switchboard.leah", None, driver, 10000, &[]) else { return };
+    assert!(printed.contains("Output 1\n\ntype_error\n"), "{printed}");
+}
