@@ -20,7 +20,7 @@ Output:
 true
 ```
 
-**Holding a path:** [reserve](#reserve) keeps a found path's blocks for one train, and locks its turnouts, so no other route or phone moves them under it. It is refused while one of the blocks is occupied (but the first, the train's own), held by another route, or one of its turnouts is locked the other way. Each block is let go as the train clears it (occupied, then free); with the last one, the turnouts are unlocked, and [on_released](#on_released) says so. [release](#release) lets go of everything at once.
+**Holding a path:** [reserve](#reserve) keeps a found path's blocks for one train, and locks its turnouts, so no other route or phone moves them under it. It is refused while one of the blocks is occupied (but the first, the train's own), held by another route, or one of its turnouts is locked the other way. Each block is let go as the train clears it (occupied, then free), and each turnout is unlocked once the train has passed it (it cleared the block before it), so another train can use them while this one goes on. With the last block, [on_released](#on_released) says so. [release](#release) lets go of everything at once.
 
 A route given to a [phone_throttle_server](ref:phone_throttle_server) with [add_route](ref:phone_throttle_server#add_route) is set from the phones too, and shows there as active while it is aligned.
 

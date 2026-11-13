@@ -172,6 +172,15 @@ $icons["layout_simulator"] = function() {
     ic.rfill(3.5, 10.5, 7, 3.5, ic.purple, 1)
     ic.shape([[6.5, 3.5], [10.5, 6], [6.5, 8.5]], ic.green)
 }
+` An auto train: a locomotive with an arrow ahead of it, running by itself.
+$icons["auto_train"] = function() {
+    ic.rfill(0.5, 6, 7, 5, ic.accent, 1)
+    ic.rfill(6, 3.5, 4, 7.5, ic.accent_dark, 1)
+    ic.circle(1.5, 10, 3.5, 3.5, ic.ink)
+    ic.circle(6, 10, 3.5, 3.5, ic.ink)
+    ic.shape([[11, 3], [15.5, 7], [11, 11]], ic.green)
+    ic.fill(0, 14.5, 16, 1, ic.edge)
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)

@@ -3031,3 +3031,114 @@ $sim.stop()
         "[true, false, \"West main\"]\nentered Main\nentered East main\nstopped in East main\n[false, false, true, true]\nentered Main\nstopped in Main\n[true, false, \"Main\"]\nentered West main\nstopped in West main\n[true, false, \"West main\"]\n"
     );
 }
+
+#[test]
+fn an_auto_train_runs_its_path_and_stops_at_the_end() {
+    // The simulated train in West main runs the path to East main by itself: the path held and lined,
+    // then away at its speed, slower in Main (the block before the last), stopped in East main; the
+    // blocks behind it let go. Another run over the held track is blocked.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$t1 = turnout(1)
+$t2 = turnout(2)
+$names = ["West main", "Main", "Siding", "East main"]
+$b = []
+foreach $names as $i: $n {
+    $b[] = block($n, sensor: sensor($i + 22))
+}
+$plan = track_plan()
+$plan.connect($b[0], $b[1], turnout: $t1, position: "closed")
+$plan.connect($b[0], $b[2], turnout: $t1, position: "thrown")
+$plan.connect($b[1], $b[3], turnout: $t2, position: "closed")
+$plan.connect($b[2], $b[3], turnout: $t2, position: "thrown")
+$plan.set_cost($b[2], 3)
+$sim = layout_simulator($plan, top_speed: 400)
+$loco = locomotive(3)
+$sim.add_train($loco, $b[0], toward: $b[1])
+$sim.start()
+$run = auto_train($loco, $plan.find_path($b[0], $b[3], delay: 0), max_speed: 80, approach_speed: 25)
+$run.on_departed = function() {
+    global $loco
+    print("departed at " + to_text($loco.speed_percent))
+}
+$run.on_block_entered = function($block) {
+    global $loco
+    print("entered " + $block.name + " at " + to_text($loco.speed_percent))
+}
+$run.on_arrived = function($block) {
+    global $loco, $run, $sim, $b
+    print("arrived in " + $block.name + ", speed " + to_text($loco.speed))
+    print([$run.state, $b[0].reserved, $b[3].reserved])
+    $sim.stop()
+}
+print([$run.start(), $run.state])
+$other = auto_train(locomotive(4), $plan.find_path($b[1], $b[3], avoid_occupied: false, delay: 0))
+$other.on_blocked = function() {
+    print("the other is blocked")
+}
+print($other.start())
+"#;
+    let run = run("auto-train", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        "[true, \"running\"]\nfalse\ndeparted at 80\nthe other is blocked\nentered Main at 25\nentered East main at 0\narrived in East main, speed 0\n[\"arrived\", false, true]\n"
+    );
+}
+
+#[test]
+fn a_waiting_auto_train_goes_once_its_path_is_free() {
+    // Train A runs from West main to East main through Main; train B, in the siding, waits for its
+    // path to West main, held by A, and goes once A has cleared West main and passed the west points
+    // (each turnout unlocked as the train passes it).
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$t1 = turnout(1)
+$t2 = turnout(2)
+$names = ["West main", "Main", "Siding", "East main"]
+$b = []
+foreach $names as $i: $n {
+    $b[] = block($n, sensor: sensor($i + 22))
+}
+$plan = track_plan()
+$plan.connect($b[0], $b[1], turnout: $t1, position: "closed")
+$plan.connect($b[0], $b[2], turnout: $t1, position: "thrown")
+$plan.connect($b[1], $b[3], turnout: $t2, position: "closed")
+$plan.connect($b[2], $b[3], turnout: $t2, position: "thrown")
+$sim = layout_simulator($plan, top_speed: 400)
+$a = locomotive(3)
+$c = locomotive(4)
+$sim.add_train($a, $b[0], toward: $b[1])
+$sim.add_train($c, $b[2], toward: $b[0])
+$sim.start()
+$run_a = auto_train($a, $plan.find_path($b[0], $b[3], delay: 0), max_speed: 80)
+$run_c = auto_train($c, $plan.find_path($b[2], $b[0], avoid_occupied: false, delay: 0), max_speed: 80)
+$arrived = 0
+$run_c.on_blocked = function() {
+    print("C waits")
+}
+$run_c.on_departed = function() {
+    global $b, $t1
+    print("C departs: West main held by " + $b[0].reserved_by + ", T1 " + $t1.state)
+}
+function arrived($block) {
+    global $arrived, $sim, $run_a, $run_c
+    $arrived++
+    if $arrived == 2 {
+        print([$run_a.state, $run_a.block.name, $run_c.state, $run_c.block.name])
+        $sim.stop()
+    }
+}
+$run_a.on_arrived = function($block) {
+    arrived($block)
+}
+$run_c.on_arrived = function($block) {
+    arrived($block)
+}
+print($run_a.start())
+print($run_c.start(wait: true))
+"#;
+    let run = run("auto-wait", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(run.stdout, "true\nfalse\nC waits\nC departs: West main held by Siding to West main, T1 thrown\n[\"arrived\", \"East main\", \"arrived\", \"West main\"]\n");
+}

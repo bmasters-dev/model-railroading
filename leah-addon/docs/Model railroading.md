@@ -77,6 +77,7 @@ The motor shield's **B** screws are the **programming track**: a piece of track 
 | [layout](ref:layout) | A railroad's turnouts, sensors, lights, and blocks, by name |
 | [route](ref:route) | Many turnouts set at once; a path's blocks held for one train |
 | [track_plan](ref:track_plan) | Which block joins which, and the paths between them |
+| [auto_train](ref:auto_train) | A train run automatically along a path: held, lined, slowed, and stopped at its end |
 | [layout_simulator](ref:layout_simulator) | Simulated trains running through a track plan's blocks, for trying it all with no layout |
 | [fast_clock](ref:fast_clock) | The layout's own time of day, faster than the real one, with alarms |
 | [track_diagram](ref:track_diagram) | A panel in a window: the track by its blocks' states, turnouts thrown with a click, entry and exit |

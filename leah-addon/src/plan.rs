@@ -122,17 +122,20 @@ impl TrackPlan {
         }
         let joints = self.joints.borrow();
         let mut settings: Vec<(Rc<Turnout>, Way)> = Vec::new();
-        for j in &path_joints {
+        // (Each turnout's place: the path's block before it, which the train clears once past it.)
+        let mut before: Vec<usize> = Vec::new();
+        for (k, j) in path_joints.iter().enumerate() {
             if let Some((t, closed)) = &joints[*j].turnout
                 && !settings.iter().any(|(s, _)| Rc::ptr_eq(s, t))
             {
                 settings.push((t.clone(), if *closed { Way::Closed } else { Way::Thrown }));
+                before.push(k);
             }
         }
         let route_blocks: Vec<Rc<Block>> = path_blocks.iter().map(|i| blocks[*i].clone()).collect();
         let name = format!("{} to {}", from.name(), to.name());
         drop(joints);
-        Ok(route::make(call, name, settings, route_blocks, delay))
+        Ok(route::make(call, name, settings, route_blocks, before, delay))
     }
 
     /// The ways a train can leave a block: each block it reaches, and the turnout (and its way) the

@@ -48,6 +48,9 @@ pub struct Route {
     settings: Vec<(Rc<Turnout>, Way)>,
     /// A path's blocks, in order (none for a route made by name).
     blocks: Vec<Rc<Block>>,
+    /// For a path: each turnout's block before it (by place in `blocks`), whose clearing means the
+    /// train has passed the turnout, which is then unlocked (sectional release).
+    before: Vec<usize>,
     delay: Cell<i64>,
     /// The step `set()` is on (the turnouts moved so far), and its count, so an older set's steps end.
     step: Cell<usize>,
@@ -57,6 +60,8 @@ pub struct Route {
     /// While reserved: each block's place, whether it is still held, and whether the train has been in it.
     held: RefCell<Vec<(bool, bool)>>,
     me: RefCell<Weak<Route>>,
+    /// Reserving without warnings (reserve_silently).
+    quiet: Cell<bool>,
     events: Events,
 }
 
@@ -103,14 +108,15 @@ pub fn new_route(call: &mut Call) -> Result<Value, Error> {
         None => DEFAULT_DELAY,
         Some(v) => delay_of(v, what).map_err(|e| e.at(call.option_line("delay")))?,
     };
-    Ok(make(call, name, settings, Vec::new(), delay))
+    Ok(make(call, name, settings, Vec::new(), Vec::new(), delay))
 }
 
 /// A route, following its turnouts (for `aligned`) and its blocks (for releasing them).
-pub(crate) fn make(call: &mut Call, name: String, settings: Vec<(Rc<Turnout>, Way)>, blocks: Vec<Rc<Block>>, delay: i64) -> Value {
+pub(crate) fn make(call: &mut Call, name: String, settings: Vec<(Rc<Turnout>, Way)>, blocks: Vec<Rc<Block>>, before: Vec<usize>, delay: i64) -> Value {
     let value = call.new_object_with_events(|events| Route {
         name,
         settings,
+        before,
         blocks,
         delay: Cell::new(delay),
         step: Cell::new(0),
@@ -119,6 +125,7 @@ pub(crate) fn make(call: &mut Call, name: String, settings: Vec<(Rc<Turnout>, Wa
         aligned: Cell::new(false),
         held: RefCell::new(Vec::new()),
         me: RefCell::new(Weak::new()),
+        quiet: Cell::new(false),
         events,
     });
     if let Some(made) = call.own_value::<Route>(&value) {
@@ -138,6 +145,14 @@ pub(crate) fn make(call: &mut Call, name: String, settings: Vec<(Rc<Turnout>, Wa
 impl Route {
     pub(crate) fn name(&self) -> &str {
         &self.name
+    }
+
+    pub(crate) fn blocks(&self) -> &[Rc<Block>] {
+        &self.blocks
+    }
+
+    pub(crate) fn settings(&self) -> &[(Rc<Turnout>, Way)] {
+        &self.settings
     }
 
     pub(crate) fn is_aligned(&self) -> bool {
@@ -224,13 +239,27 @@ impl Route {
 
     /// Holds its blocks for one train and locks its turnouts: false (and a warning saying why) when a
     /// block is occupied or held by another route.
+    fn say(&self, call: &Call, words: String) {
+        if !self.quiet.get() {
+            call.warn(words);
+        }
+    }
+
     pub(crate) fn is_reserved(&self) -> bool {
         self.held.borrow().iter().any(|(still, _)| *still)
     }
 
+    /// `reserve()` without its warnings (a train waiting for its path tries again and again).
+    pub(crate) fn reserve_silently(&self, call: &Call) -> bool {
+        self.quiet.set(true);
+        let held = self.reserve(call);
+        self.quiet.set(false);
+        held
+    }
+
     pub(crate) fn reserve(&self, call: &Call) -> bool {
         if self.blocks.is_empty() {
-            call.warn(format!("route {} has no blocks to hold (a route found by a track plan's find_path has)", self.name));
+            self.say(call, format!("route {} has no blocks to hold (a route found by a track plan's find_path has)", self.name));
             return false;
         }
         if !self.held.borrow().is_empty() {
@@ -242,16 +271,16 @@ impl Route {
             }
             // (The first block is the train's own, where it waits: occupied by it.)
             if i > 0 && b.is_occupied() == Some(true) {
-                call.warn(format!("route {} can't be reserved: block {} is occupied", self.name, b.name()));
+                self.say(call, format!("route {} can't be reserved: block {} is occupied", self.name, b.name()));
                 return false;
             }
             if let Some(other) = b.reserved_by.borrow().as_ref() {
-                call.warn(format!("route {} can't be reserved: block {} is held by route {other}", self.name, b.name()));
+                self.say(call, format!("route {} can't be reserved: block {} is held by route {other}", self.name, b.name()));
                 return false;
             }
         }
         if let Some((t, _)) = self.settings.iter().find(|(t, way)| t.is_locked() && t.commanded() != Some(Self::closed_for(t, *way))) {
-            call.warn(format!("route {} can't be reserved: turnout {} is locked the other way", self.name, t.name()));
+            self.say(call, format!("route {} can't be reserved: turnout {} is locked the other way", self.name, t.name()));
             return false;
         }
         // (The train's own block, occupied already, is let go once it leaves it.)
@@ -317,6 +346,12 @@ impl Follower for Route {
             let b = &self.blocks[*i];
             if b.reserved_by.borrow().as_deref() == Some(self.name.as_str()) {
                 b.reserve_for(None, call);
+            }
+            // (The turnouts the train has passed are free again.)
+            for (k, (t, _)) in self.settings.iter().enumerate() {
+                if self.before.get(k) == Some(i) {
+                    t.lock(false);
+                }
             }
         }
         if !released.is_empty() && self.held.borrow().iter().all(|(still, _)| !still) {
