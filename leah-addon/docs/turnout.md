@@ -147,7 +147,7 @@ How it knows where it lies: `"none"`, `"one_sensor"`, `"two_sensors"`, or `"dela
 
 **locked** · boolean
 
-`true` to keep it where it is: [close](#close), [throw](#throw), and [toggle](#toggle) are then a `hardware_error`, and a phone's request is refused with a message on the phone.
+`true` to keep it where it is: [close](#close), [throw](#throw), and [toggle](#toggle) are then a `hardware_error`, and a phone's request is refused with a message on the phone. It reads `true` also while a [route](ref:route) holds it for a train (each route holding it keeps it locked until the last lets go); setting it is the script's own lock, apart from the routes'.
 
 ---
 
