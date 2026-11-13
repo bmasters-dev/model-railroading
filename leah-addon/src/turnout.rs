@@ -180,6 +180,23 @@ impl Turnout {
         &self.sensors
     }
 
+    pub(crate) fn base(&self) -> &Rc<DccBase> {
+        &self.base
+    }
+
+    pub(crate) fn is_locked(&self) -> bool {
+        self.locked.get()
+    }
+
+    pub(crate) fn lock(&self, on: bool) {
+        self.locked.set(on);
+    }
+
+    /// What it was last told: Some(true) closed.
+    pub(crate) fn commanded(&self) -> Option<bool> {
+        self.commanded.get()
+    }
+
     /// "closed", "thrown", "unknown", "moving", or "inconsistent".
     pub(crate) fn state_word(&self) -> &'static str {
         self.known.get().word()

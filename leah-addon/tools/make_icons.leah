@@ -136,6 +136,22 @@ $icons["layout"] = function() {
     ic.stroke([[4, 12.5], [8, 9.5], [12, 9.5]], ic.edge, 1.5)
     ic.rfill(5, 1.5, 6, 3, ic.accent, 1)
 }
+` A route: a yard ladder, one track lit its way.
+$icons["route"] = function() {
+    ic.stroke([[0.5, 13.5], [15.5, 13.5]], ic.edge, 1.5)
+    ic.stroke([[3, 13.5], [8, 8.5], [15.5, 8.5]], ic.edge, 1.5)
+    ic.stroke([[8, 8.5], [13, 3.5], [15.5, 3.5]], ic.accent, 2)
+    ic.stroke([[0.5, 13.5], [3, 13.5], [8, 8.5]], ic.accent, 2)
+}
+` A track plan: blocks as dots, joined by track, one split at a turnout.
+$icons["track_plan"] = function() {
+    ic.stroke([[2.5, 12.5], [7.5, 12.5], [13.5, 12.5]], ic.edge, 1.5)
+    ic.stroke([[7.5, 12.5], [13.5, 4.5]], ic.edge, 1.5)
+    ic.circle(0.5, 10.5, 4, 4, ic.accent)
+    ic.circle(5.5, 10.5, 4, 4, ic.green)
+    ic.circle(11.5, 10.5, 4, 4, ic.accent)
+    ic.circle(11.5, 2.5, 4, 4, ic.accent)
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)

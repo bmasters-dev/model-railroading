@@ -13,7 +13,7 @@ use crate::base::{describe, Locomotive};
 use crate::consist::Consist;
 use crate::sensor::{as_follower, Follower, Followers, Sensor};
 
-const PROPS: &[&str] = &["name", "sensor", "state", "occupied", "train"];
+const PROPS: &[&str] = &["name", "sensor", "state", "occupied", "train", "reserved", "reserved_by"];
 
 /// The train in a block, as the script gave it.
 enum Train {
@@ -29,8 +29,10 @@ pub struct Block {
     /// Whether it is occupied (None: not known yet), as last said.
     occupied: Cell<Option<bool>>,
     train: RefCell<Option<Train>>,
-    /// The lights following it.
+    /// The lights and routes following it.
     pub(crate) followers: Followers,
+    /// The route holding it for a train (route.rs), by name, while it does.
+    pub(crate) reserved_by: RefCell<Option<String>>,
     events: Events,
 }
 
@@ -52,7 +54,7 @@ pub fn new_block(call: &mut Call) -> Result<Value, Error> {
         }
         None => Some(false),
     };
-    let value = call.new_object_with_events(|events| Block { name, sensor, occupied: Cell::new(occupied), train: RefCell::new(None), followers: Followers::default(), events });
+    let value = call.new_object_with_events(|events| Block { name, sensor, occupied: Cell::new(occupied), train: RefCell::new(None), followers: Followers::default(), reserved_by: RefCell::new(None), events });
     if let Some(made) = call.own_value::<Block>(&value)
         && let Some(s) = &made.sensor
     {
@@ -144,6 +146,8 @@ impl Object for Block {
             "state" => Value::from(Self::word(self.occupied.get())),
             "occupied" => Value::from(self.occupied.get() == Some(true)),
             "train" => self.train_value(call),
+            "reserved" => Value::from(self.reserved_by.borrow().is_some()),
+            "reserved_by" => self.reserved_by.borrow().as_deref().map_or(Value::Null, Value::from),
             other => return Err(call.unknown_property("block", other, PROPS)),
         })
     }

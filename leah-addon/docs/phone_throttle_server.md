@@ -53,7 +53,7 @@ Starting it needs Leah 0.1.0-alpha.50 or later; an older Leah says so (an `api_e
 
 | Name | Parameters | Returns |
 |---|---|---|
-| [add_route](#add_route) | name as text, label: text | |
+| [add_route](#add_route) | route or name, label: text | |
 | [add_turnout](#add_turnout) | name as text or a turnout, label: text, state: text | |
 | [close](#close) | | |
 | [message](#message) | text, alert: boolean | |
@@ -157,9 +157,15 @@ Its turnouts, each an array of `name`, `label`, and `state` (`"closed"`, `"throw
 
 ### add_route
 
+**add_route**(route, label: its name)
+
 **add_route**(name, label: name)
 
-Adds a route the phones can set: `name` is how they ask for it, `label` what they show. It starts inactive. The phones connected are told. A name it has already is a `range_error`.
+Adds a route the phones can set. Given a [route](ref:route), a phone's request sets the real one, and it shows as active while it is aligned (inactive when one of its turnouts moves off its way). Given a name, `"R1"`, the phones ask for it by that name, and the script sets the route itself in [on_route_request](#on_route_request); it starts inactive. `label` is what the phones show. The phones connected are told. A name it has already is a `range_error`.
+
+```leah check
+$server.add_route(route("Track 5", [[$t1, "thrown"], [$t2, "closed"]]), label: "Yard, track 5")
+```
 
 ---
 

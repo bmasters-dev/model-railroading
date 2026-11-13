@@ -75,6 +75,8 @@ The motor shield's **B** screws are the **programming track**: a piece of track 
 | [light](ref:light) | An accessory output switched on and off, by itself following a sensor, a turnout, or a block |
 | [block](ref:block) | A stretch of track: occupied or free, by its detector, and the train in it |
 | [layout](ref:layout) | A railroad's turnouts, sensors, lights, and blocks, by name |
+| [route](ref:route) | Many turnouts set at once; a path's blocks held for one train |
+| [track_plan](ref:track_plan) | Which block joins which, and the paths between them |
 | [Layout file functions](ref:Layout file functions) | A layout saved to a file and read back |
 | [Waiting functions](ref:Waiting functions) | Waiting until a sensor, a turnout, a block, or a light is in a state |
 | [phone_throttle_server](ref:phone_throttle_server) | Phone throttle apps that work with WiThrottle (Engine Driver, WiThrottle) driving the locomotives over the Wi-Fi |

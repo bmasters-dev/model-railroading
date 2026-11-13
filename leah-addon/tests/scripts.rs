@@ -2744,3 +2744,157 @@ fn wait_for_hears_the_boards_pin_while_it_waits() {
     assert!(run.success, "{}", run.stderr);
     assert_eq!(run.stdout, "true\n");
 }
+
+#[test]
+fn a_track_plan_finds_paths_and_routes_set_and_hold_them() {
+    // A passing loop: west main, the west points (turnout 1: closed to the main, thrown to the
+    // siding), the two tracks, the east points (turnout 3, the same), the east main (turnout 2: thrown
+    // to the yard, closed to the end). Paths go around what they must, never reverse at the points,
+    // and are routes: set, aligned, reserved for a train, and let go block by block as it clears them.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$t1 = turnout(1)
+$t2 = turnout(2)
+$t3 = turnout(3)
+$names = ["West main", "West points", "Main", "Siding", "East points", "East main", "Yard", "End"]
+$s = []
+$b = []
+foreach $names as $i: $n {
+    $s[] = sensor($i + 22)
+    $b[] = block($n, sensor: $s[$i])
+}
+$plan = track_plan()
+$plan.connect($b[0], $b[1])
+$plan.connect($b[1], $b[2], turnout: $t1, position: "closed")
+$plan.connect($b[1], $b[3], turnout: $t1, position: "thrown")
+$plan.connect($b[2], $b[4], turnout: $t3, position: "closed")
+$plan.connect($b[3], $b[4], turnout: $t3, position: "thrown")
+$plan.connect($b[4], $b[5])
+$plan.connect($b[5], $b[6], turnout: $t2, position: "thrown")
+$plan.connect($b[5], $b[7], turnout: $t2, position: "closed")
+$plan.set_cost($b[3], 3)
+function show($route) {
+    if $route == null {
+        return "no path"
+    }
+    $parts = []
+    foreach $route.blocks as $x {
+        $parts[] = $x.name
+    }
+    foreach $route.settings as $pair {
+        $parts[] = $pair[0].name + " " + $pair[1]
+    }
+    return join($parts, ", ")
+}
+print(show($plan.find_path($b[0], $b[6])))
+print(show($plan.find_path($b[0], $b[5], avoid: $b[2])))
+print(show($plan.find_path($b[3], $b[2])))
+$s[2].simulate("active")
+print(show($plan.find_path($b[0], $b[5])))
+print(show($plan.find_path($b[0], $b[5], avoid_occupied: false)))
+$s[2].simulate("inactive")
+print(show($plan.find_path($b[0], $b[7], via: $b[3])))
+print([count($plan.neighbours($b[1])), $plan.cost($b[3]), $plan.cost($b[2]), count($plan.connections)])
+$path = $plan.find_path($b[0], $b[6], delay: 40)
+print([$path.name, $path.aligned, $path.busy])
+$path.on_set = function() {
+    print("set")
+}
+$path.on_aligned = function() {
+    print("aligned")
+}
+$path.on_released = function() {
+    print("released")
+}
+$path.set()
+print($path.busy)
+sleep(300)
+print([$path.aligned, $t1.state, $t3.state, $t2.state, $path.busy])
+print([$path.reserve(), $b[1].reserved, $b[1].reserved_by, $t1.locked])
+print(show($plan.find_path($b[0], $b[3])))
+$crossing = route("Siding", [[$t1, "thrown"]])
+try {
+    $crossing.set()
+} catch $e {
+    print($e.message)
+}
+foreach [0, 1, 2, 4, 5, 6] as $i {
+    $s[$i].simulate("active")
+    $s[$i].simulate("inactive")
+}
+print([$path.reserved, $b[6].reserved, $t1.locked])
+$yard5 = route("Track 5", [[$t1, "thrown"], [$t2, "toggle"]], delay: 0)
+$yard5.set()
+print([$t1.state, $t2.state, $yard5.aligned, count($yard5.blocks), $yard5.reserve()])
+try {
+    route("Bad", [[$t1, "sideways"]])
+} catch $e {
+    print($e.message)
+}
+"#;
+    let run = run("routes-plan", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        r#"West main, West points, Main, East points, East main, Yard, T1 closed, T3 closed, T2 thrown
+West main, West points, Siding, East points, East main, T1 thrown, T3 thrown
+no path
+West main, West points, Siding, East points, East main, T1 thrown, T3 thrown
+West main, West points, Main, East points, East main, T1 closed, T3 closed
+West main, West points, Siding, East points, East main, End, T1 thrown, T3 thrown, T2 closed
+[3, 3, 1, 8]
+["West main to Yard", false, false]
+true
+aligned
+set
+[true, "closed", "closed", "thrown", false]
+[true, true, "West main to Yard", true]
+no path
+route Siding can't be set: turnout T1 is locked
+[false, false, false]
+["thrown", "closed", true, 0, false]
+route(): a route's turnouts are a list of pairs, each a turnout and "closed", "thrown", or "toggle" ([[$yard, "thrown"], [$main, "closed"]]), not "sideways"
+released
+"#
+    );
+    assert!(run.stderr.contains("route Track 5 has no blocks to hold"), "{}", run.stderr);
+}
+
+#[test]
+fn a_phone_sets_a_real_route_and_sees_it_aligned() {
+    // A route given to the phone server: a phone's request sets its turnouts (delay 0: at once), and
+    // the phones see it active once it is aligned, inactive when a turnout moves off its way.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$t1 = turnout(1)
+$t2 = turnout(2)
+$main = route("Main", [[$t1, "closed"], [$t2, "thrown"]], delay: 0)
+$server = phone_throttle_server(port: 0, name: "Test Railroad", announce: false)
+$server.add_route($main, label: "Main line")
+$server.add_turnout($t1)
+$server.on_route_request = function($name) {
+    global $t1, $t2
+    print([$name, $t1.state, $t2.state])
+}
+$server.on_client_left = function($name) {
+    global $server
+    $server.close()
+}
+print($server.port)
+"#;
+    let run = Running::start("phone_route", script);
+    let port: u16 = run.next().trim().parse().expect("the server's port printed");
+    let mut phone = Phone::connect(port);
+    let hello = phone.listen();
+    assert!(hello.contains(&"PRL]\\[Main}|{Main line}|{4".to_string()), "not yet set: inactive: {hello:?}");
+    phone.say("PRA2Main");
+    let heard = phone.listen();
+    assert!(heard.contains(&"PRA2Main".to_string()), "{heard:?}");
+    assert_eq!(run.next(), "[\"Main\", \"closed\", \"thrown\"]");
+    phone.say("PTATT1");
+    let heard = phone.listen();
+    assert!(heard.contains(&"PRA4Main".to_string()), "a turnout moved off its way: {heard:?}");
+    phone.say("Q");
+    let (ok, err) = run.end();
+    assert!(ok, "{err}");
+}

@@ -17,8 +17,10 @@ mod layout;
 mod light;
 mod makers;
 mod phone;
+mod plan;
 mod programmer;
 mod roster;
+mod route;
 mod sensor;
 mod turnout;
 mod wait;
@@ -70,6 +72,8 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("light", &[], light::new_light as Function),
             ("block", &[], block::new_block as Function),
             ("layout", &[], layout::new_layout as Function),
+            ("route", &[], route::new_route as Function),
+            ("track_plan", &[], plan::new_plan as Function),
             ("wait_for", &[], wait::wait_for as Function),
             ("wait_for_any", &[], wait::wait_for_any as Function),
             ("write_layout_file", &[Needs::Files], layout::write_layout_file as Function),
@@ -88,8 +92,10 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("turnout", &["address", "name", "state", "commanded", "inverted", "feedback", "sensors", "move_time", "locked", "base"], &["close", "throw", "toggle"], &["on_changed", "on_mismatch"]),
             ("sensor", &["pin", "name", "state", "active", "inverted", "pull", "active_delay", "inactive_delay", "base"], &["simulate"], &["on_changed", "on_active", "on_inactive"]),
             ("light", &["address", "name", "on", "inverted", "following", "base"], &["toggle", "pulse", "follow"], &["on_changed"]),
-            ("block", &["name", "sensor", "state", "occupied", "train"], &[], &["on_changed", "on_occupied", "on_cleared"]),
+            ("block", &["name", "sensor", "state", "occupied", "train", "reserved", "reserved_by"], &[], &["on_changed", "on_occupied", "on_cleared"]),
             ("layout", &["names", "count", "turnouts", "sensors", "lights", "blocks"], &["add", "find", "remove"], &[]),
+            ("route", &["name", "settings", "blocks", "delay", "busy", "aligned", "reserved"], &["set", "reserve", "release"], &["on_set", "on_aligned", "on_released"]),
+            ("track_plan", &["blocks", "connections"], &["connect", "set_cost", "cost", "neighbours", "find_path"], &[]),
             ("phone_throttle_server", &["name", "port", "running", "clients", "heartbeat", "turnouts", "routes", "clock", "base", "roster"], &["add_turnout", "set_turnout", "remove_turnout", "add_route", "set_route", "remove_route", "set_clock", "stop_clock", "message", "close"], &["on_client", "on_client_left", "on_turnout_request", "on_route_request"]),
         ],
         controls: vec![],

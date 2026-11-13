@@ -36,6 +36,8 @@ Output:
 |---|---|---|
 | [name](#name) | text | ✓ |
 | [occupied](#occupied) | boolean | |
+| [reserved](#reserved) | boolean | ✓ |
+| [reserved_by](#reserved_by) | text | ✓ |
 | [sensor](#sensor) | sensor | ✓ |
 | [state](#state) | text | ✓ |
 | [train](#train) | any | |
@@ -63,6 +65,22 @@ Its name.
 **occupied** · boolean
 
 `true` while a train is in it. Set by the script only for a block without a sensor; for one with a sensor, setting it is a `type_error`.
+
+---
+
+### reserved
+
+**reserved** · boolean · read-only
+
+`true` while a [route](ref:route) holds it for a train.
+
+---
+
+### reserved_by
+
+**reserved_by** · text · read-only
+
+The name of the route holding it; `null` when none does.
 
 ---
 
@@ -114,4 +132,4 @@ A train came into it.
 
 ## See also
 
-[sensor](ref:sensor), [light](ref:light), [layout](ref:layout)
+[sensor](ref:sensor), [light](ref:light), [layout](ref:layout), [track_plan](ref:track_plan), [route](ref:route)

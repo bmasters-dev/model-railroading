@@ -153,8 +153,11 @@ struct Turnout {
 struct Route {
     name: String,
     label: String,
-    /// 2 active, 4 inactive.
+    /// 2 active, 4 inactive, 8 being set.
     state: u8,
+    /// The real route it stands for, when the script gave one: a phone's request sets it, and it is
+    /// active while it is aligned.
+    object: Option<Rc<crate::route::Route>>,
 }
 
 pub struct PhoneServer {
@@ -405,6 +408,16 @@ fn read_phone(mut stream: TcpStream, id: u64, watch: Arc<Watch>, shared: Arc<Sha
     shared.watches.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     if !shared.stop.load(Ordering::SeqCst) {
         events.post("phone_left", vec![Value::from(id as i64)]);
+    }
+}
+
+/// A real route became aligned, or stopped being (its turnouts moved): every phone told.
+pub(crate) fn route_changed(base: &DccBase, route: &crate::route::Route) {
+    for s in base.phone_servers.borrow().iter().filter_map(Weak::upgrade) {
+        let found = s.routes.borrow().iter().position(|r| r.object.as_ref().is_some_and(|o| std::ptr::eq(Rc::as_ptr(o), route)));
+        if let Some(i) = found {
+            s.set_route_state(i, if route.is_aligned() { 2 } else { 4 });
+        }
     }
 }
 
@@ -663,7 +676,18 @@ impl PhoneServer {
                 self.alert(id, &format!("Leah: there is no route {name}"));
                 return;
             };
-            self.set_route_state(i, 2);
+            // (A real route is set: active once it is aligned.)
+            let object = self.routes.borrow()[i].object.clone();
+            match object {
+                Some(o) => {
+                    if let Err(e) = o.set(call) {
+                        self.alert(id, &format!("Leah: route {name} wasn't set: {}", e.message));
+                        return;
+                    }
+                    self.set_route_state(i, if o.is_aligned() { 2 } else { 8 });
+                }
+                None => self.set_route_state(i, 2),
+            }
             self.events.fire("on_route_request", vec![Value::from(name)]);
         }
     }
@@ -1223,12 +1247,18 @@ impl Object for PhoneServer {
             "add_route" => {
                 call.count_between(1, 1)?;
                 call.only_options(&["label"])?;
-                let name = plain_name(call, 0, &what)?;
+                // (A real route, or a name the script sets its own way in on_route_request.)
+                let object = call.own::<crate::route::Route>(0);
+                let name = match &object {
+                    Some(o) => o.name().to_string(),
+                    None => plain_name(call, 0, &what)?,
+                };
                 if self.route_index(&name).is_some() {
                     return Err(Error::range_error(format!("{what}: there is a route {name} already")));
                 }
                 let label = label_option(call, &what, &name)?;
-                self.routes.borrow_mut().push(Route { name, label, state: 4 });
+                let state = if object.as_ref().is_some_and(|o| o.is_aligned()) { 2 } else { 4 };
+                self.routes.borrow_mut().push(Route { name, label, state, object });
                 for l in self.route_lines() {
                     self.shared.send_all(&l);
                 }
@@ -1244,7 +1274,15 @@ impl Object for PhoneServer {
                     Some("inactive") => 4,
                     _ => return Err(Error::type_error(format!("{what}: a route's state is \"active\" or \"inactive\", not {}", describe(call.arg(1))))),
                 };
-                self.set_route_state(i, state);
+                // (A real route made active is set; its state then follows whether it is aligned.)
+                let object = self.routes.borrow()[i].object.clone();
+                match object {
+                    Some(o) if state == 2 => {
+                        o.set(call)?;
+                        self.set_route_state(i, if o.is_aligned() { 2 } else { 8 });
+                    }
+                    _ => self.set_route_state(i, state),
+                }
                 Ok(Value::Null)
             }
             "set_clock" => {
