@@ -264,14 +264,6 @@ impl DccBase {
             }
             (std::mem::take(&mut h.packets), std::mem::take(&mut h.base_said), h.timing.clone(), h.gone.clone(), h.reader_gone.take(), std::mem::take(&mut h.pins))
         };
-        if !pins.is_empty() {
-            let sensors: Vec<_> = self.sensors.borrow().iter().filter_map(Weak::upgrade).collect();
-            for (pin, high) in pins {
-                for s in sensors.iter().filter(|s| s.pin() == Some(pin)) {
-                    s.heard(high, call);
-                }
-            }
-        }
         if timing.is_some() {
             *self.timing.borrow_mut() = timing;
         }
@@ -338,6 +330,16 @@ impl DccBase {
         {
             self.power_now(false);
             *self.lost.borrow_mut() = Some(gone);
+        }
+        // (The pins last, after the packets, timing, and words taken with them: a sensor's followers may
+        // send packets, which take in what came since, newer than these; those are handled in order.)
+        if !pins.is_empty() {
+            let sensors: Vec<_> = self.sensors.borrow().iter().filter_map(Weak::upgrade).collect();
+            for (pin, high) in pins {
+                for s in sensors.iter().filter(|s| s.pin() == Some(pin)) {
+                    s.heard(high, call);
+                }
+            }
         }
     }
 

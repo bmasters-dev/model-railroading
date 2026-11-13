@@ -170,7 +170,14 @@ impl AutoTrain {
         self.reached.set(0);
         self.state.set(State::Lining);
         self.events.keep_working(true);
-        self.route.set(call)
+        // (Its turnouts couldn't be moved: it waits, not lining, and its path is let go.)
+        if let Err(e) = self.route.set(call) {
+            self.state.set(State::Waiting);
+            self.events.keep_working(false);
+            self.route.release_now(call);
+            return Err(e);
+        }
+        Ok(())
     }
 }
 
@@ -254,6 +261,8 @@ impl Object for AutoTrain {
                 if matches!(state, State::Lining | State::Running | State::Approaching) {
                     self.before_halt.set(state);
                     self.state.set(State::Halted);
+                    // (Halted, a script without windows needn't wait for it; resume() waits again.)
+                    self.events.keep_working(false);
                 }
                 if function == "halt" { self.loco.halt(false, call)? } else { self.loco.halt(true, call)? }
                 Ok(Value::Null)
@@ -264,6 +273,7 @@ impl Object for AutoTrain {
                 if self.state.get() == State::Halted {
                     let before = self.before_halt.get();
                     self.state.set(before);
+                    self.events.keep_working(true);
                     match before {
                         State::Running => self.drive(self.max_speed.get(), call)?,
                         State::Approaching => self.drive(self.approach_speed.get(), call)?,

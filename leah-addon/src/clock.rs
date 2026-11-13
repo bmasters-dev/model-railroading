@@ -139,12 +139,13 @@ impl FastClock {
                 // (Until the next layout minute, in real time.)
                 let at = from + start.elapsed().as_secs_f64() * rate;
                 let next = (at / 60.0).floor() * 60.0 + 60.0;
-                let wait = ((next - at) / rate).max(0.001);
+                // (Until a moment after the minute's turn, so the clock's own reading is in the new one.)
+                let wait = ((next - at) / rate).max(0.0) + 0.002;
                 std::thread::sleep(Duration::from_secs_f64(wait.min(1.0)));
                 if runs.load(Ordering::SeqCst) != run {
                     return;
                 }
-                if from + start.elapsed().as_secs_f64() * rate >= next - 0.0001 {
+                if from + start.elapsed().as_secs_f64() * rate >= next {
                     events.post("clock_tick", vec![]);
                 }
             }
@@ -152,16 +153,23 @@ impl FastClock {
     }
 
     /// Each layout minute not yet said: on_minute, and on_alarm for an alarm's.
+    /// Each layout minute not yet said (every one since the last said, when the script was busy for
+    /// more than one): on_minute, and on_alarm for an alarm's.
     fn tick(&self, call: &Call) {
         let minute = (self.now() / 60.0) as u32 % 1440;
         if self.said.get() == Some(minute) {
             return;
         }
+        let first = self.said.get().map_or(minute, |s| (s + 1) % 1440);
+        let count = (minute + 1440 - first) % 1440 + 1;
         self.said.set(Some(minute));
-        let time = words(f64::from(minute * 60), false);
-        self.events.fire("on_minute", vec![Value::from(time.as_str())]);
-        if self.alarms.borrow().contains(&minute) {
-            self.events.fire("on_alarm", vec![Value::from(time.as_str())]);
+        for k in 0..count {
+            let m = (first + k) % 1440;
+            let time = words(f64::from(m * 60), false);
+            self.events.fire("on_minute", vec![Value::from(time.as_str())]);
+            if self.alarms.borrow().contains(&m) {
+                self.events.fire("on_alarm", vec![Value::from(time.as_str())]);
+            }
         }
         self.followers.tell(call);
     }

@@ -148,6 +148,14 @@ impl Light {
                 Following::Block(b, _) => b.followers.add(me),
             }
         }
+        // (Following a board's detector: it may switch while the script waits.)
+        let live = match &following {
+            Some(Following::Sensor(s, _)) => s.is_live(),
+            Some(Following::Turnout(t, _)) => t.is_live(),
+            Some(Following::Block(b, _)) => b.is_live(),
+            None => false,
+        };
+        self.events.keep_running(live);
         *self.following.borrow_mut() = following;
         // (At once, as what it follows is now.)
         if let Some(on) = self.followed_says() {
@@ -181,8 +189,18 @@ impl Light {
 }
 
 impl Follower for Light {
+    fn source_closed(&self) {
+        self.events.keep_running(false);
+        self.followers.tell_closed();
+    }
+
     fn followed_changed(&self, call: &Call) {
         // (Only a change: what it followed before still tells it of its own changes.)
+        // (What it follows has the last word: a pulse under way is over.)
+        if self.followed_says().is_some() {
+            self.pulses.set(self.pulses.get() + 1);
+            self.events.keep_working(false);
+        }
         if let Some(on) = self.followed_says().filter(|on| self.on.get() != Some(*on))
             && let Err(e) = self.switch(on, call)
         {

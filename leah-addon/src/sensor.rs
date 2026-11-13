@@ -28,6 +28,10 @@ const MOST_DELAY: i64 = 60_000;
 /// its state again.
 pub(crate) trait Follower {
     fn followed_changed(&self, call: &Call);
+
+    /// What it follows will change no more (its base station closed): a script without windows needn't
+    /// wait for it.
+    fn source_closed(&self) {}
 }
 
 /// The objects following one, each told when it changes.
@@ -38,7 +42,17 @@ impl Followers {
     pub(crate) fn add(&self, who: Weak<dyn Follower>) {
         let mut f = self.0.borrow_mut();
         f.retain(|w| w.strong_count() > 0);
-        f.push(who);
+        // (Each follower once: following again isn't told twice.)
+        if !f.iter().any(|w| Weak::ptr_eq(w, &who)) {
+            f.push(who);
+        }
+    }
+
+    pub(crate) fn tell_closed(&self) {
+        let followers: Vec<_> = self.0.borrow().iter().filter_map(Weak::upgrade).collect();
+        for f in followers {
+            f.source_closed();
+        }
     }
 
     pub(crate) fn tell(&self, call: &Call) {
@@ -191,6 +205,13 @@ impl Sensor {
     /// Its base station was closed: nothing more comes from its pin.
     pub(crate) fn base_closed(&self) {
         self.events.keep_running(false);
+        self.followers.tell_closed();
+    }
+
+    /// Whether a board's pin changes it (its base station a real one, open): what follows it may hear
+    /// of changes while the script waits.
+    pub(crate) fn is_live(&self) -> bool {
+        self.base.as_ref().is_some_and(|b| !b.simulated())
     }
 
     pub(crate) fn follow(&self, who: Weak<dyn Follower>) {

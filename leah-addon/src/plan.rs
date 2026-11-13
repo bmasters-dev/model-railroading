@@ -97,8 +97,11 @@ impl TrackPlan {
         let mut path_blocks = vec![places[0]];
         let mut path_joints = Vec::new();
         let mut ways: HashMap<*const Turnout, bool> = HashMap::new();
+        // (Blocks an earlier leg passed: never stops of a later one, nor passed again.)
+        let mut passed = vec![false; blocks.len()];
+        passed[places[0]] = true;
         for leg in places.windows(2) {
-            banned[leg[1]] = avoid.iter().any(|a| Rc::ptr_eq(a, &blocks[leg[1]]));
+            banned[leg[1]] = passed[leg[1]] || avoid.iter().any(|a| Rc::ptr_eq(a, &blocks[leg[1]]));
             if banned[leg[1]] {
                 return Ok(Value::Null);
             }
@@ -116,6 +119,7 @@ impl TrackPlan {
             // (The blocks passed can't be passed again on the next leg.)
             for b in &bs {
                 banned[*b] = true;
+                passed[*b] = true;
             }
             path_blocks.extend(bs.into_iter().skip(1));
             path_joints.extend(js);

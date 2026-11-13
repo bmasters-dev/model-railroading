@@ -82,11 +82,18 @@ pub fn new_speedometer(call: &mut Call) -> Result<Value, Error> {
         let me = as_follower(&made);
         made.first.follow(me.clone());
         made.second.follow(me);
+        if made.first.is_live() || made.second.is_live() {
+            made.events.keep_running(true);
+        }
     }
     Ok(value)
 }
 
 impl Follower for Speedometer {
+    fn source_closed(&self) {
+        self.events.keep_running(false);
+    }
+
     fn followed_changed(&self, _call: &Call) {
         let now = (self.first.is_active(), self.second.is_active());
         let before = std::mem::replace(&mut *self.was.borrow_mut(), now);
@@ -95,12 +102,17 @@ impl Follower for Speedometer {
             if !rising {
                 continue;
             }
+            // (A start older than a minute was a train that backed away: forgotten.)
+            if self.started.get().is_some_and(|(_, at)| at.elapsed().as_secs_f64() > 60.0) {
+                self.started.set(None);
+            }
             match self.started.get() {
-                // (The other sensor reached after this one's: a speed, either way.)
+                // (The other sensor reached after this one's: a speed, either way. Under 20 ms, both
+                // changes were taken in together, the script busy: no true time, so none is said.)
                 Some((from_first, at)) if from_first != is_first => {
                     self.started.set(None);
                     let seconds = at.elapsed().as_secs_f64();
-                    if seconds > 0.0 {
+                    if seconds >= 0.02 {
                         let cm = self.distance / seconds;
                         self.last.set(Some(cm));
                         let kmh = scale_kmh(cm, self.ratio);

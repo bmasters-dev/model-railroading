@@ -59,6 +59,10 @@ pub fn new_block(call: &mut Call) -> Result<Value, Error> {
         && let Some(s) = &made.sensor
     {
         s.follow(as_follower(&made));
+        // (Its detector on a board: its events may come while the script waits.)
+        if s.is_live() {
+            made.events.keep_running(true);
+        }
     }
     Ok(value)
 }
@@ -94,6 +98,11 @@ impl Block {
 
     pub(crate) fn sensor(&self) -> Option<&Rc<Sensor>> {
         self.sensor.as_ref()
+    }
+
+    /// Whether a board's detector changes it.
+    pub(crate) fn is_live(&self) -> bool {
+        self.sensor.as_ref().is_some_and(|s| s.is_live())
     }
 
     pub(crate) fn is_occupied(&self) -> Option<bool> {
@@ -137,6 +146,11 @@ impl Block {
 }
 
 impl Follower for Block {
+    fn source_closed(&self) {
+        self.events.keep_running(false);
+        self.followers.tell_closed();
+    }
+
     fn followed_changed(&self, call: &Call) {
         let Some(s) = &self.sensor else { return };
         self.now(s.is_active(), call);

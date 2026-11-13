@@ -351,7 +351,11 @@ impl TrackDiagram {
         let route = call.own_value::<Route>(&found);
         let lined = match &route {
             Some(r) if r.reserve(call) => {
-                r.set(call)?;
+                // (A path that can't be lined isn't kept held.)
+                if let Err(e) = r.set(call) {
+                    r.release_now(call);
+                    return Err(e);
+                }
                 true
             }
             _ => false,

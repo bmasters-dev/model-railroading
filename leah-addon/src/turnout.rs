@@ -155,6 +155,9 @@ pub fn new_turnout(call: &mut Call) -> Result<Value, Error> {
         for s in &made.sensors {
             s.follow(me.clone());
         }
+        if made.is_live() {
+            made.events.keep_running(true);
+        }
     }
     Ok(value)
 }
@@ -182,6 +185,11 @@ impl Turnout {
 
     pub(crate) fn base(&self) -> &Rc<DccBase> {
         &self.base
+    }
+
+    /// Whether a board's sensor tells where it lies.
+    pub(crate) fn is_live(&self) -> bool {
+        self.sensors.iter().any(|s| s.is_live())
     }
 
     pub(crate) fn is_locked(&self) -> bool {
@@ -298,6 +306,11 @@ impl Turnout {
 }
 
 impl Follower for Turnout {
+    fn source_closed(&self) {
+        self.events.keep_running(false);
+        self.followers.tell_closed();
+    }
+
     fn followed_changed(&self, call: &Call) {
         let known = self.sensed();
         self.now(known, call);

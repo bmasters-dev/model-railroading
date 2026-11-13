@@ -59,6 +59,9 @@ pub struct Route {
     aligned: Cell<bool>,
     /// While reserved: each block's place, whether it is still held, and whether the train has been in it.
     held: RefCell<Vec<(bool, bool)>>,
+    /// Which of its turnouts this route locked and still holds locked (one locked by another route or
+    /// the script isn't its to unlock or move).
+    ours: RefCell<Vec<bool>>,
     me: RefCell<Weak<Route>>,
     /// Reserving without warnings (reserve_silently).
     quiet: Cell<bool>,
@@ -124,6 +127,7 @@ pub(crate) fn make(call: &mut Call, name: String, settings: Vec<(Rc<Turnout>, Wa
         busy: Cell::new(false),
         aligned: Cell::new(false),
         held: RefCell::new(Vec::new()),
+        ours: RefCell::new(Vec::new()),
         me: RefCell::new(Weak::new()),
         quiet: Cell::new(false),
         events,
@@ -138,6 +142,9 @@ pub(crate) fn make(call: &mut Call, name: String, settings: Vec<(Rc<Turnout>, Wa
             b.followers.add(me.clone());
         }
         made.aligned.set(made.lies_its_way());
+        if made.blocks.iter().any(|b| b.is_live()) || made.settings.iter().any(|(t, _)| t.is_live()) {
+            made.events.keep_running(true);
+        }
     }
     value
 }
@@ -181,8 +188,8 @@ impl Route {
     pub(crate) fn set(&self, call: &mut Call) -> Result<(), Error> {
         // (A turnout locked by another (or the script) that the route would move: none moves. Its own,
         // locked while it holds its blocks, it moves.)
-        let mine = !self.held.borrow().is_empty();
-        if let Some((t, _)) = self.settings.iter().find(|(t, way)| !mine && t.is_locked() && t.commanded() != Some(Self::closed_for(t, *way))) {
+        let ours = self.ours.borrow().clone();
+        if let Some((t, _)) = self.settings.iter().enumerate().find(|(k, (t, way))| !ours.get(*k).copied().unwrap_or(false) && t.is_locked() && t.commanded() != Some(Self::closed_for(t, *way))).map(|(_, p)| p) {
             return Err(Error::new("hardware_error", format!("route {} can't be set: turnout {} is locked", self.name, t.name())));
         }
         let set = self.sets.get() + 1;
@@ -215,7 +222,7 @@ impl Route {
         // (One already told this way, locked or not, isn't sent again; one locked by this route's
         // hold is unlocked for its move.)
         if !(t.is_locked() && t.commanded() == Some(closed)) {
-            let mine = t.is_locked() && !self.held.borrow().is_empty();
+            let mine = t.is_locked() && self.ours.borrow().get(i).copied().unwrap_or(false);
             if mine {
                 t.lock(false);
             }
@@ -285,13 +292,23 @@ impl Route {
         }
         // (The train's own block, occupied already, is let go once it leaves it.)
         *self.held.borrow_mut() = self.blocks.iter().map(|b| (true, b.is_occupied() == Some(true))).collect();
-        for (t, _) in &self.settings {
-            t.lock(true);
-        }
+        // (Only those not locked already are its own to unlock later.)
+        *self.ours.borrow_mut() = self.settings.iter().map(|(t, _)| {
+            let free = !t.is_locked();
+            if free {
+                t.lock(true);
+            }
+            free
+        }).collect();
         for b in &self.blocks {
             b.reserve_for(Some(&self.name), call);
         }
         true
+    }
+
+    /// `release()`, for the track diagram's entry and exit.
+    pub(crate) fn release_now(&self, call: &Call) {
+        self.release(call);
     }
 
     /// Lets go of its blocks still held and unlocks its turnouts.
@@ -305,14 +322,21 @@ impl Route {
                 b.reserve_for(None, call);
             }
         }
-        for (t, _) in &self.settings {
-            t.lock(false);
+        let ours = std::mem::take(&mut *self.ours.borrow_mut());
+        for ((t, _), mine) in self.settings.iter().zip(ours) {
+            if mine {
+                t.lock(false);
+            }
         }
         self.events.fire("on_released", vec![]);
     }
 }
 
 impl Follower for Route {
+    fn source_closed(&self) {
+        self.events.keep_running(false);
+    }
+
     fn followed_changed(&self, call: &Call) {
         let aligned = self.lies_its_way();
         if self.aligned.replace(aligned) != aligned {
@@ -349,7 +373,8 @@ impl Follower for Route {
             }
             // (The turnouts the train has passed are free again.)
             for (k, (t, _)) in self.settings.iter().enumerate() {
-                if self.before.get(k) == Some(i) {
+                if self.before.get(k) == Some(i) && self.ours.borrow().get(k).copied().unwrap_or(false) {
+                    self.ours.borrow_mut()[k] = false;
                     t.lock(false);
                 }
             }

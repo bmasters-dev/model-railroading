@@ -3187,3 +3187,89 @@ try {
         "[\"kmh\": 172.8, \"mph\": 107.4]\n[\"kmh\": 94.1, \"mph\": 58.5]\nscale_speed(): a scale is one of HO, N, O, S, TT, Z, OO, G, large (or its ratio, 87.1 for 1:87.1), not \"HOn3\"\n[true, true, true]\n"
     );
 }
+
+#[test]
+fn a_route_unlocks_only_the_turnouts_it_locked() {
+    // Route A holds the main through the west points; once its train has passed them, route B takes
+    // and locks them for the siding. A's release leaves B's lock alone, and A can't move them.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$t1 = turnout(1)
+$west = block("West main", sensor: sensor(22))
+$points = block("Points", sensor: sensor(23))
+$main = block("Main", sensor: sensor(24))
+$siding = block("Siding", sensor: sensor(25))
+$plan = track_plan()
+$plan.connect($west, $points)
+$plan.connect($points, $main, turnout: $t1, position: "closed")
+$plan.connect($points, $siding, turnout: $t1, position: "thrown")
+$a = $plan.find_path($west, $main, delay: 0)
+print($a.reserve())
+$a.set()
+foreach [$west, $points] as $b {
+    $b.sensor.simulate("active")
+    $b.sensor.simulate("inactive")
+}
+print([$t1.locked, $points.reserved])
+$west.sensor.simulate("active")
+$b = $plan.find_path($west, $siding, avoid_occupied: false, delay: 0)
+print($b.reserve())
+$b.set()
+$a.release()
+print([$t1.locked, $t1.state])
+try {
+    $a.set()
+} catch $e {
+    print($e.message)
+}
+$b.release()
+print($t1.locked)
+"#;
+    let run = run("route-locks", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(run.stdout, "true\n[false, false]\ntrue\n[true, \"thrown\"]\nroute West main to Main can't be set: turnout T1 is locked\nfalse\n");
+}
+
+#[test]
+fn a_block_on_a_boards_detector_keeps_the_script_waiting_for_its_events() {
+    // Only the block's event is set (none on its sensor): the script waits for it.
+    let Some(boards) = fake_boards(&["--pins", "22:0@0.6"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!("$base = dcc_base(\"{}\")\n$b = block(\"Main\", sensor: sensor(22))\n$b.on_occupied = function() {{\n    global $base\n    print(\"occupied\")\n    $base.close()\n}}\n", boards.base);
+    let run = run("block-live", &script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(run.stdout, "occupied\n");
+}
+
+#[test]
+fn a_path_never_passes_a_block_twice_across_its_via_legs_and_a_busy_clock_says_every_minute() {
+    let script = r#"$base = dcc_base(simulate: true)
+$a = block("A")
+$t = block("T")
+$v = block("V")
+$plan = track_plan()
+$plan.connect($a, $t)
+$plan.connect($t, $v)
+print($plan.find_path($a, $t, via: $v))
+$clock = fast_clock(time: "06:00", rate: 60)
+$clock.on_minute = function($time) {
+    print($time)
+}
+$clock.on_alarm = function($time) {
+    global $clock
+    print("alarm " + $time)
+    $clock.stop()
+}
+$clock.alarms = ["06:02"]
+$clock.start()
+` (Busy for 2.5 seconds: two and a half layout minutes, said all the same.)
+$until = milliseconds() + 2500
+while milliseconds() < $until {
+}
+"#;
+    let run = run("via-clock", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(run.stdout, "\n06:01\n06:02\nalarm 06:02\n");
+}
