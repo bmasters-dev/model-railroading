@@ -81,6 +81,8 @@ def main():
     digest = hashlib.sha256((DIST / file).read_bytes()).hexdigest()
     (DIST / f"{file}.sha256").write_text(f"{digest}  {file}\n")
     shutil.copy(HERE / f"{ADDON}.icons", DIST / f"{ADDON}.icons")
+    # (Its help for Leah's API and the IDE's hover help, from the pages: leah-language#727.)
+    run(sys.executable, "-I", str(HERE / "tools" / "docs.py"), "help", "--to", str(DIST / f"{ADDON}.help.json"), at=HERE)
     run("git", "tag", tag)
     run("git", "push", "--quiet", "origin", tag)
     release = github("POST", f"https://api.github.com/repos/{REPO}/releases", {
@@ -88,7 +90,7 @@ def main():
         "name": f"Model railroading addon {version}",
         "body": f"The model railroading addon for Leah, {version}.\n\nInstall it with:\n\n    leah --install-addon https://github.com/{REPO}\n\nand update it with `leah --update-addon {ADDON}`.\n",
     })
-    for name in [file, f"{file}.sha256", f"{ADDON}.icons"]:
+    for name in [file, f"{file}.sha256", f"{ADDON}.icons", f"{ADDON}.help.json"]:
         print(f"uploading {name}")
         github("POST", f"https://uploads.github.com/repos/{REPO}/releases/{release['id']}/assets?name={name}", body=(DIST / name).read_bytes(), kind="application/octet-stream")
     print(f"published {release['html_url']}")

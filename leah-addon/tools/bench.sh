@@ -36,6 +36,8 @@ fi
 addons="$HOME/Leah_Temp/bench/3rd-party-addons"
 mkdir -p "$addons"
 cp "$here/target/debug/libleah_addon_model_railroading.so" "$addons/model_railroading.so"
+# (Its help from the pages, as a release carries it: hover help in an IDE run from here.)
+python3 -I "$here/tools/docs.py" help --to "$addons/model_railroading.help.json" 2>/dev/null || true
 echo "bench: $(basename "$script") with $("$leah" --version | head -1) and the addon as built" >&2
 cd "$(dirname "$script")"
 # (LEAH_PHONE_LOG: what each phone and the phone server say, on this terminal.)

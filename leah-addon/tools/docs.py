@@ -8,6 +8,10 @@ addon keeps its own documentation.
     python3 -I tools/docs.py wiki [--no-push]   publish every page to the wiki, with its Home page,
                                                 header, and sidebar (only committed pages; never over
                                                 an edit made on the website, unless --force)
+    python3 -I tools/docs.py help [--to path]   write model_railroading.help.json from the pages: the
+                                                help Leah gives for the addon's names (the API's help,
+                                                the IDE's hover help), beside the .so (by default in
+                                                target/; the release and tools/bench.sh carry it)
 
 Run from leah-addon/ (or give its path in ADDON_ROOT).
 
@@ -287,8 +291,28 @@ def wiki(args):
     return 0
 
 
+def help_file(args):
+    """The pages' help as Leah reads it from `<name>.help.json` beside the addon's library (Leah's
+    docs/spec/addons.md, "A 3rd-party addon's help"), made by Leah's own reader of reference pages
+    (LEAH_TOOLS, else ~/Leah_Dev/tools: the kit will carry it once published, leah-language#720)."""
+    import json
+    to = Path(args[args.index("--to") + 1]) if "--to" in args else ROOT / "target" / "model_railroading.help.json"
+    tools = Path(os.environ.get("LEAH_TOOLS", Path.home() / "Leah_Dev" / "tools"))
+    if not (tools / "make_ai_guide.py").exists():
+        sys.exit(f"docs: Leah's reader of reference pages isn't in {tools} (set LEAH_TOOLS)")
+    sys.path.insert(0, str(tools))
+    import make_ai_guide
+    made = make_ai_guide.addon_help(pages(), "model_railroading")
+    to.parent.mkdir(parents=True, exist_ok=True)
+    to.write_text(json.dumps(made, ensure_ascii=False, sort_keys=True, indent=0) + "\n", encoding="utf-8")
+    print(f"wrote {to}: {len(made['functions'])} functions, {len(made['members'])} objects", file=sys.stderr)
+    return 0
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 2 or sys.argv[1] not in ("check", "wiki"):
+    if len(sys.argv) < 2 or sys.argv[1] not in ("check", "wiki", "help"):
         sys.exit(__doc__)
     rest = [a for a in sys.argv[2:] if not a.startswith("--")]
+    if sys.argv[1] == "help":
+        sys.exit(help_file(sys.argv[2:]))
     sys.exit(check(rest) if sys.argv[1] == "check" else wiki(sys.argv[2:]))
