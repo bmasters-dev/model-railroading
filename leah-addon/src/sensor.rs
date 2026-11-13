@@ -211,7 +211,7 @@ impl Sensor {
     /// Whether a board's pin changes it (its base station a real one, open): what follows it may hear
     /// of changes while the script waits.
     pub(crate) fn is_live(&self) -> bool {
-        self.base.as_ref().is_some_and(|b| !b.simulated())
+        self.base.as_ref().is_some_and(|b| b.board_open())
     }
 
     pub(crate) fn follow(&self, who: Weak<dyn Follower>) {

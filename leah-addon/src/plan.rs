@@ -100,8 +100,11 @@ impl TrackPlan {
         // (Blocks an earlier leg passed: never stops of a later one, nor passed again.)
         let mut passed = vec![false; blocks.len()];
         passed[places[0]] = true;
-        for leg in places.windows(2) {
-            banned[leg[1]] = passed[leg[1]] || avoid.iter().any(|a| Rc::ptr_eq(a, &blocks[leg[1]]));
+        let legs = places.len() - 1;
+        for (n, leg) in places.windows(2).enumerate() {
+            // (Back to its first block at the end, round a loop, is a path; passing it on the way isn't.)
+            let home = n + 1 == legs && leg[1] == places[0];
+            banned[leg[1]] = (passed[leg[1]] && !home) || avoid.iter().any(|a| Rc::ptr_eq(a, &blocks[leg[1]]));
             if banned[leg[1]] {
                 return Ok(Value::Null);
             }

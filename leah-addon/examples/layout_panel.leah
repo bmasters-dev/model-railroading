@@ -57,6 +57,8 @@ p { margin: 8px 12px; }
 <script>
 const G = 20, W = 5;
 const colors = {free: "#c8cdd5", occupied: "#e0393e", reserved: "#2ea44f", unknown: "#7a828e"};
+// (Names and words from the layout go into the page as text, never as markup.)
+function esc(t) { return String(t).replace(/[&<>"\x27]/g, c => "&#" + c.charCodeAt(0) + ";"); }
 let ws;
 function line(points, color, width) {
   return `<polyline points="${points.map(p => p[0]*G + "," + p[1]*G).join(" ")}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round"/>`;
@@ -67,7 +69,7 @@ function draw(pieces) {
     const tap = `onclick="press(${i})" style="cursor:pointer"`;
     if (p.kind === "track") {
       out += `<g ${tap}>` + (p.entry ? line(p.points, "#fff", W + 4) : "") + line(p.points, colors[p.state], W) + line(p.points, "transparent", 24) + "</g>";
-      if (p.name) { const a = p.points[0], b = p.points[1]; out += `<text x="${(a[0]+b[0])/2*G}" y="${((a[1]+b[1])/2-0.6)*G}" fill="#dfe3e8" font-size="12" text-anchor="middle">${p.name}</text>`; }
+      if (p.name) { const a = p.points[0], b = p.points[1]; out += `<text x="${(a[0]+b[0])/2*G}" y="${((a[1]+b[1])/2-0.6)*G}" fill="#dfe3e8" font-size="12" text-anchor="middle">${esc(p.name)}</text>`; }
     } else if (p.kind === "turnout") {
       const lying = p.state === "closed" ? p.closed_to : p.state === "thrown" ? p.thrown_to : null;
       const other = p.state === "closed" ? p.thrown_to : p.state === "thrown" ? p.closed_to : null;
@@ -80,7 +82,7 @@ function draw(pieces) {
       const lit = p.state === "active" || p.state === "on";
       out += `<circle ${tap} cx="${p.at[0]*G}" cy="${p.at[1]*G}" r="7" fill="${lit ? (p.kind === "light" ? "#f5c02c" : "#2ea44f") : "#545c68"}" stroke="#1a1a1e"/>`;
     } else if (p.kind === "label" || p.kind === "clock") {
-      out += `<text x="${p.at[0]*G}" y="${p.at[1]*G}" fill="#dfe3e8" font-size="${p.kind === "clock" ? 22 : 12}" text-anchor="middle">${p.text}</text>`;
+      out += `<text x="${p.at[0]*G}" y="${p.at[1]*G}" fill="#dfe3e8" font-size="${p.kind === "clock" ? 22 : 12}" text-anchor="middle">${esc(p.text)}</text>`;
     }
   });
   document.getElementById("panel").innerHTML = out;

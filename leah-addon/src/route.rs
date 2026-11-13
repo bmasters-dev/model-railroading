@@ -65,8 +65,10 @@ pub struct Route {
     me: RefCell<Weak<Route>>,
     /// Reserving without warnings (reserve_silently).
     quiet: Cell<bool>,
-    /// The switchboards showing it.
+    /// The switchboards and auto trains following it.
     pub(crate) followers: crate::sensor::Followers,
+    /// Its last set() stopped at a turnout that couldn't move.
+    set_failed: Cell<bool>,
     events: Events,
 }
 
@@ -133,6 +135,7 @@ pub(crate) fn make(call: &mut Call, name: String, settings: Vec<(Rc<Turnout>, Wa
         me: RefCell::new(Weak::new()),
         quiet: Cell::new(false),
         followers: crate::sensor::Followers::default(),
+        set_failed: Cell::new(false),
         events,
     });
     if let Some(made) = call.own_value::<Route>(&value) {
@@ -165,6 +168,10 @@ impl Route {
         &self.settings
     }
 
+    pub(crate) fn set_failed(&self) -> bool {
+        self.set_failed.get()
+    }
+
     pub(crate) fn is_aligned(&self) -> bool {
         self.aligned.get()
     }
@@ -195,6 +202,7 @@ impl Route {
         if let Some((t, _)) = self.settings.iter().enumerate().find(|(k, (t, way))| !ours.get(*k).copied().unwrap_or(false) && t.is_locked() && t.commanded() != Some(Self::closed_for(t, *way))).map(|(_, p)| p) {
             return Err(Error::new("hardware_error", format!("route {} can't be set: turnout {} is locked", self.name, t.name())));
         }
+        self.set_failed.set(false);
         let set = self.sets.get() + 1;
         self.sets.set(set);
         self.step.set(0);
@@ -222,18 +230,14 @@ impl Route {
         };
         self.step.set(i + 1);
         let closed = Self::closed_for(t, *way);
-        // (One already told this way, locked or not, isn't sent again; one locked by this route's
-        // hold is unlocked for its move.)
+        // (One already told this way, locked or not, isn't sent again; one this route holds is moved
+        // as its holder.)
         if !(t.is_locked() && t.commanded() == Some(closed)) {
-            let mine = t.is_locked() && self.ours.borrow().get(i).copied().unwrap_or(false);
-            if mine {
-                t.lock(false);
+            if self.ours.borrow().get(i).copied().unwrap_or(false) {
+                t.set_held(closed, call)?;
+            } else {
+                t.set(closed, call)?;
             }
-            let moved = t.set(closed, call);
-            if mine {
-                t.lock(true);
-            }
-            moved?;
         }
         if self.step.get() >= self.settings.len() || self.delay.get() == 0 {
             return self.next_step(set, call);
@@ -295,13 +299,10 @@ impl Route {
         }
         // (The train's own block, occupied already, is let go once it leaves it.)
         *self.held.borrow_mut() = self.blocks.iter().map(|b| (true, b.is_occupied() == Some(true))).collect();
-        // (Only those not locked already are its own to unlock later.)
+        // (Each held by this route as well as any other: locked until the last lets go.)
         *self.ours.borrow_mut() = self.settings.iter().map(|(t, _)| {
-            let free = !t.is_locked();
-            if free {
-                t.lock(true);
-            }
-            free
+            t.hold();
+            true
         }).collect();
         for b in &self.blocks {
             b.reserve_for(Some(&self.name), call);
@@ -328,7 +329,7 @@ impl Route {
         let ours = std::mem::take(&mut *self.ours.borrow_mut());
         for ((t, _), mine) in self.settings.iter().zip(ours) {
             if mine {
-                t.lock(false);
+                t.let_go();
             }
         }
         self.events.fire("on_released", vec![]);
@@ -337,7 +338,7 @@ impl Route {
 
 impl Follower for Route {
     fn source_closed(&self) {
-        self.events.keep_running(false);
+        self.events.keep_running(self.blocks.iter().any(|b| b.is_live()) || self.settings.iter().any(|(t, _)| t.is_live()));
     }
 
     fn followed_changed(&self, call: &Call) {
@@ -379,7 +380,7 @@ impl Follower for Route {
             for (k, (t, _)) in self.settings.iter().enumerate() {
                 if self.before.get(k) == Some(i) && self.ours.borrow().get(k).copied().unwrap_or(false) {
                     self.ours.borrow_mut()[k] = false;
-                    t.lock(false);
+                    t.let_go();
                 }
             }
         }
@@ -446,9 +447,11 @@ impl Object for Route {
             "route_step" => {
                 let set = call.int(0)? as u64;
                 if let Err(e) = self.next_step(set, call) {
-                    // (A turnout that couldn't move: the route stops there.)
+                    // (A turnout that couldn't move: the route stops there, and what follows it hears.)
                     self.busy.set(false);
                     self.events.keep_working(false);
+                    self.set_failed.set(true);
+                    self.followers.tell(call);
                     return Err(e);
                 }
                 Ok(Value::Null)

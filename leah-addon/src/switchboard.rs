@@ -63,6 +63,8 @@ pub struct Switchboard {
     single: bool,
     shown: RefCell<Vec<Shown>>,
     columns: Cell<i64>,
+    /// Counts its rebuilds: a click posted for buttons since rebuilt is ignored.
+    builds: Cell<u64>,
     me: RefCell<Weak<Switchboard>>,
     events: Events,
     #[cfg(feature = "windows")]
@@ -95,7 +97,7 @@ pub fn new_switchboard(call: &mut Call) -> Result<Value, Error> {
             gtk4::style_context_add_provider_for_display(&display, &css, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
         let single = call.name == "layout_button";
-        let value = call.new_object_with_events(|events| Switchboard { single, shown: RefCell::new(Vec::new()), columns: Cell::new(4), me: RefCell::new(Weak::new()), events, grid, buttons: RefCell::new(Vec::new()) });
+        let value = call.new_object_with_events(|events| Switchboard { single, shown: RefCell::new(Vec::new()), columns: Cell::new(4), builds: Cell::new(0), me: RefCell::new(Weak::new()), events, grid, buttons: RefCell::new(Vec::new()) });
         if let Some(made) = call.own_value::<Switchboard>(&value) {
             *made.me.borrow_mut() = Rc::downgrade(&made);
         }
@@ -108,6 +110,8 @@ pub fn new_switchboard(call: &mut Call) -> Result<Value, Error> {
 impl Switchboard {
     /// Its buttons made again for what it shows, in rows `columns` wide.
     fn rebuild(&self) {
+        let build = self.builds.get() + 1;
+        self.builds.set(build);
         #[cfg(feature = "windows")]
         {
             use gtk4::prelude::*;
@@ -119,7 +123,7 @@ impl Switchboard {
                 let button = gtk4::Button::new();
                 let events = self.events.clone();
                 button.connect_clicked(move |_| {
-                    events.post("switchboard_click", vec![Value::Int(i as i64)]);
+                    events.post("switchboard_click", vec![Value::Int(build as i64), Value::Int(i as i64)]);
                 });
                 self.grid.attach(&button, i as i32 % columns, i as i32 / columns, 1, 1);
                 self.buttons.borrow_mut().push(button);
@@ -302,8 +306,11 @@ impl Object for Switchboard {
             }
             // (Posted by GTK's click handler, the kit's level 6: not listed for scripts.)
             "switchboard_click" => {
-                let i = call.int(0)? as usize;
-                self.clicked(i, call)?;
+                // (A click on buttons since made again: the index may be another object's now.)
+                if call.int(0)? as u64 == self.builds.get() {
+                    let i = call.int(1)? as usize;
+                    self.clicked(i, call)?;
+                }
             }
             other => return Err(call.unknown_function("switchboard", other, FUNCS)),
         }

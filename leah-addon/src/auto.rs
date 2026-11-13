@@ -107,6 +107,7 @@ pub fn new_auto_train(call: &mut Call) -> Result<Value, Error> {
         for (t, _) in made.route.settings() {
             t.followers.add(me.clone());
         }
+        made.route.followers.add(me.clone());
     }
     Ok(value)
 }
@@ -125,6 +126,15 @@ impl AutoTrain {
         if self.state.get() == State::Blocked && self.waiting.get() && self.route.reserve_silently(call) {
             self.waiting.set(false);
             self.depart_lining(call)?;
+        }
+        // (Its turnouts couldn't all be moved: it gives up the path, blocked.)
+        if self.state.get() == State::Lining && self.route.set_failed() {
+            self.state.set(State::Blocked);
+            self.waiting.set(false);
+            self.events.keep_working(false);
+            self.route.release_now(call);
+            self.events.fire("on_blocked", vec![]);
+            return Ok(());
         }
         let state = self.state.get();
         if state == State::Lining && self.route.is_aligned() {

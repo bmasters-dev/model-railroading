@@ -201,7 +201,13 @@ impl Light {
 
 impl Follower for Light {
     fn source_closed(&self) {
-        self.events.keep_running(false);
+        let live = match self.following.borrow().as_ref() {
+            Some(Following::Sensor(s, _)) => s.is_live(),
+            Some(Following::Turnout(t, _)) => t.is_live(),
+            Some(Following::Block(b, _)) => b.is_live(),
+            None => false,
+        };
+        self.events.keep_running(live);
         self.followers.tell_closed();
     }
 

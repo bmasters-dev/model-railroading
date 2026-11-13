@@ -24,6 +24,12 @@ pub struct SignalHead {
     /// Its lamps: red, yellow, green (any may be missing: a two-lamp head has no yellow).
     lamps: [Option<Rc<Light>>; 3],
     aspect: Cell<&'static str>,
+    /// The aspect the script chose (set by hand, not automatic), shown again when a hold ends.
+    chosen: Cell<&'static str>,
+    /// Changing its lamps now, and whether another change came meanwhile (from a lamp's packet taking
+    /// in what the board said): done after, never interleaved.
+    showing: Cell<bool>,
+    again: Cell<bool>,
     held: Cell<bool>,
     /// What it protects when automatic: the blocks ahead, in order, and the turnouts' ways.
     blocks: RefCell<Vec<Rc<Block>>>,
@@ -51,7 +57,7 @@ pub fn new_signal_head(call: &mut Call) -> Result<Value, Error> {
     if lamps[0].is_none() {
         return Err(Error::type_error(format!("{what}: a signal head needs its red lamp (`red:`, a light), at least")));
     }
-    let value = call.new_object_with_events(|events| SignalHead { name, lamps, aspect: Cell::new("dark"), held: Cell::new(false), blocks: RefCell::new(Vec::new()), turnouts: RefCell::new(Vec::new()), me: RefCell::new(Weak::new()), events });
+    let value = call.new_object_with_events(|events| SignalHead { name, lamps, aspect: Cell::new("dark"), chosen: Cell::new("dark"), showing: Cell::new(false), again: Cell::new(false), held: Cell::new(false), blocks: RefCell::new(Vec::new()), turnouts: RefCell::new(Vec::new()), me: RefCell::new(Weak::new()), events });
     if let Some(made) = call.own_value::<SignalHead>(&value) {
         *made.me.borrow_mut() = Rc::downgrade(&made);
     }
@@ -61,8 +67,34 @@ pub fn new_signal_head(call: &mut Call) -> Result<Value, Error> {
 impl SignalHead {
     /// Shows an aspect: its lamp on, the others off. A head without that lamp shows the next more
     /// restrictive one it has (yellow without a yellow lamp: red).
-    fn show(&self, wanted: &'static str, call: &Call) -> Result<(), Error> {
-        let wanted = if self.held.get() && wanted != "dark" { "red" } else { wanted };
+    /// Shows what it should now: red while held, else what it protects calls for (automatic), else
+    /// the aspect the script chose. A change asked for while one is under way is done right after.
+    fn show(&self, call: &Call) -> Result<(), Error> {
+        if self.showing.replace(true) {
+            self.again.set(true);
+            return Ok(());
+        }
+        let result = loop {
+            self.again.set(false);
+            let wanted = if self.held.get() {
+                "red"
+            } else if !self.blocks.borrow().is_empty() {
+                self.automatic_aspect()
+            } else {
+                self.chosen.get()
+            };
+            if let Err(e) = self.show_once(wanted, call) {
+                break Err(e);
+            }
+            if !self.again.get() {
+                break Ok(());
+            }
+        };
+        self.showing.set(false);
+        result
+    }
+
+    fn show_once(&self, wanted: &'static str, call: &Call) -> Result<(), Error> {
         let shown = match wanted {
             "green" if self.lamps[2].is_none() => if self.lamps[1].is_some() { "yellow" } else { "red" },
             "yellow" if self.lamps[1].is_none() => "red",
@@ -86,8 +118,13 @@ impl SignalHead {
         if let Some(i) = on
             && let Some(l) = &self.lamps[i]
             && !l.is_on()
+            && let Err(e) = l.switch_to(true, call)
         {
-            l.switch_to(true, call)?;
+            // (Its other lamps are out: it shows nothing now.)
+            if self.aspect.replace("dark") != "dark" {
+                self.events.fire("on_changed", vec![Value::from("dark")]);
+            }
+            return Err(e);
         }
         if self.aspect.replace(shown) != shown {
             self.events.fire("on_changed", vec![Value::from(shown)]);
@@ -114,8 +151,7 @@ impl Follower for SignalHead {
         if self.blocks.borrow().is_empty() {
             return;
         }
-        let aspect = self.automatic_aspect();
-        if let Err(e) = self.show(aspect, call) {
+        if let Err(e) = self.show(call) {
             call.warn(format!("signal {} couldn't change: {}", self.name, e.message));
         }
     }
@@ -144,13 +180,13 @@ impl Object for SignalHead {
                     return Err(Error::type_error(format!("signal {} is automatic: its aspect comes from what it protects (stop_protecting() first, or hold it with held)", self.name)));
                 }
                 let a = value.as_text().and_then(|t| ASPECTS.iter().find(|a| **a == t)).ok_or_else(|| Error::range_error(format!("a signal head's `aspect` is \"red\", \"yellow\", \"green\", or \"dark\", not {}", describe(&value))))?;
-                self.show(a, call)?;
+                self.chosen.set(a);
+                self.show(call)?;
             }
             "held" => match value {
                 Value::Bool(b) => {
                     self.held.set(b);
-                    let aspect = if self.blocks.borrow().is_empty() { if b { "red" } else { self.aspect.get() } } else { self.automatic_aspect() };
-                    self.show(aspect, call)?;
+                    self.show(call)?;
                 }
                 other => return Err(Error::type_error(format!("a signal head's `held` is true or false, not {}", describe(&other)))),
             },
@@ -201,12 +237,16 @@ impl Object for SignalHead {
                 }
                 *self.blocks.borrow_mut() = blocks;
                 *self.turnouts.borrow_mut() = turnouts;
-                self.show(self.automatic_aspect(), call)?;
+                self.show(call)?;
                 Ok(Value::Null)
             }
             "stop_protecting" => {
                 call.count_between(0, 0)?;
                 call.only_options(&[])?;
+                // (It goes on showing what it protected called for, now as the script's choice.)
+                if !self.blocks.borrow().is_empty() {
+                    self.chosen.set(self.automatic_aspect());
+                }
                 self.blocks.borrow_mut().clear();
                 self.turnouts.borrow_mut().clear();
                 Ok(Value::Null)

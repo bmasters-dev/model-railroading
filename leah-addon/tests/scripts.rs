@@ -3379,3 +3379,87 @@ $head.on_changed = function($aspect) {
         "[\"dark\", false]\n[\"green\", true, \"closed\", \"thrown\"]\nyellow\nred\nred\nred\ngreen\nsignal West home is automatic: its aspect comes from what it protects (stop_protecting() first, or hold it with held)\nred\nnow green\nnow yellow\nnow red\nnow yellow\nnow green\nnow red\nnow green\nnow red\nnow green\n"
     );
 }
+
+#[test]
+fn routes_sharing_a_turnout_keep_it_locked_until_both_let_go_and_a_hold_ends_on_the_chosen_aspect() {
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$t = turnout(1)
+$t.close()
+$a = route("A", [[$t, "closed"]])
+$b = route("B", [[$t, "closed"]])
+$plan = track_plan()
+$w = block("W")
+$e = block("E")
+$x = block("X")
+$y = block("Y")
+$plan.connect($w, $e, turnout: $t, position: "closed")
+$plan.connect($x, $y, turnout: $t, position: "closed")
+$pa = $plan.find_path($w, $e)
+$pb = $plan.find_path($x, $y)
+print([$pa.reserve(), $pb.reserve(), $t.locked])
+$pa.release()
+print($t.locked)
+try {
+    $t.throw()
+} catch $e2 {
+    print($e2.message)
+}
+$pb.release()
+print($t.locked)
+$head = signal_head(red: light(30), green: light(31))
+$head.aspect = "green"
+$head.held = true
+print($head.aspect)
+$head.held = false
+print($head.aspect)
+"#;
+    let run = run("shared-turnout", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(run.stdout, "[true, true, true]\ntrue\nturnout 1 (T1) is locked: a route holds it for a train, so it isn't thrown until the route lets it go\nfalse\nred\ngreen\n");
+}
+
+#[test]
+fn an_auto_train_whose_turnout_cant_move_is_blocked_and_a_loop_path_comes_home() {
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$t1 = turnout(1)
+$t2 = turnout(2)
+$a = block("A")
+$b = block("B")
+$c = block("C")
+$plan = track_plan()
+$plan.connect($a, $b, turnout: $t1, position: "thrown")
+$plan.connect($b, $c, turnout: $t2, position: "thrown")
+$plan.connect($c, $a)
+$home = $plan.find_path($a, $a, via: [$b, $c])
+print(count($home.blocks))
+$run = auto_train(locomotive(3), $plan.find_path($a, $c, via: $b, delay: 300))
+$run.on_blocked = function() {
+    global $run, $b
+    print(["blocked", $run.state, $b.reserved])
+}
+print($run.start())
+$t2.locked = true
+"#;
+    let run = run("auto-fails", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(run.stdout, "4\ntrue\n[\"blocked\", \"blocked\", false]\n");
+}
+
+#[test]
+fn an_inline_sensors_delay_still_reaches_it() {
+    // The sensor is made inside block()'s call and never kept by the script: its delay (posted work)
+    // still reaches it, through the block that holds it.
+    let script = r#"$base = dcc_base(simulate: true)
+$b = block("Main", sensor: sensor(22, inactive_delay: 200))
+$b.on_changed = function($state) {
+    print($state)
+}
+$b.sensor.simulate("active")
+$b.sensor.simulate("inactive")
+"#;
+    let run = run("inline-sensor", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(run.stdout, "occupied\nfree\n");
+}

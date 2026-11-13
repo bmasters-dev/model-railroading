@@ -147,7 +147,7 @@ impl Block {
 
 impl Follower for Block {
     fn source_closed(&self) {
-        self.events.keep_running(false);
+        self.events.keep_running(self.is_live());
         self.followers.tell_closed();
     }
 

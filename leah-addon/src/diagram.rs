@@ -347,6 +347,8 @@ impl TrackDiagram {
     /// them lined and held, or refused.
     fn entry_exit(&self, plan: &Rc<TrackPlan>, b: Rc<Block>, call: &mut Call) -> Result<(), Error> {
         let entry = self.shown.entry.borrow_mut().take();
+        // (The entry picked or let go changes only what is shown: a web panel hears of it.)
+        self.events.fire("on_changed", vec![]);
         let Some(entry) = entry else {
             *self.shown.entry.borrow_mut() = Some(b);
             return Ok(());
@@ -602,7 +604,6 @@ impl Object for TrackDiagram {
                     _ => return Err(Error::range_error(format!("{what}: a piece's place in pieces(), 0 to {}, not {}", self.shown.pieces.borrow().len().saturating_sub(1), describe(call.arg(0))))),
                 };
                 self.press(i, call)?;
-                self.events.fire("on_changed", vec![]);
                 return Ok(Value::Null);
             }
             "pick_block" => {

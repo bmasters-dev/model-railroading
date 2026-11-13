@@ -40,7 +40,9 @@ pub struct Turnout {
     known: Cell<Known>,
     /// Counts the moves: a move's wait whose count is no longer the newest is over.
     moves: Cell<u64>,
+    /// Locked by the script (`locked`), and how many routes hold it: locked while either is.
     locked: Cell<bool>,
+    holds: Cell<u32>,
     /// The lights following it.
     pub(crate) followers: Followers,
     events: Events,
@@ -141,6 +143,7 @@ pub fn new_turnout(call: &mut Call) -> Result<Value, Error> {
         known: Cell::new(Known::Unknown),
         moves: Cell::new(0),
         locked: Cell::new(false),
+        holds: Cell::new(0),
         followers: Followers::default(),
         events,
     });
@@ -193,11 +196,26 @@ impl Turnout {
     }
 
     pub(crate) fn is_locked(&self) -> bool {
-        self.locked.get()
+        self.locked.get() || self.holds.get() > 0
     }
 
-    pub(crate) fn lock(&self, on: bool) {
-        self.locked.set(on);
+    /// A route holds it (locked while any route does), or lets go.
+    pub(crate) fn hold(&self) {
+        self.holds.set(self.holds.get() + 1);
+    }
+
+    pub(crate) fn let_go(&self) {
+        self.holds.set(self.holds.get().saturating_sub(1));
+    }
+
+    /// Moved by a route holding it: refused if the script locked it, or another route holds it lying
+    /// the other way.
+    pub(crate) fn set_held(&self, closed: bool, call: &mut Call) -> Result<(), Error> {
+        let words = if closed { "closed" } else { "thrown" };
+        if self.locked.get() || (self.holds.get() > 1 && self.commanded.get() != Some(closed)) {
+            return Err(Error::new("hardware_error", format!("turnout {} ({}) is locked: it isn't {words}", self.address, self.name)));
+        }
+        self.move_to(closed, call)
     }
 
     /// What it was last told: Some(true) closed.
@@ -256,6 +274,15 @@ impl Turnout {
         if self.locked.get() {
             return Err(Error::new("hardware_error", format!("turnout {} ({}) is locked: it isn't {words} until it is unlocked (locked = false)", self.address, self.name)));
         }
+        if self.holds.get() > 0 {
+            return Err(Error::new("hardware_error", format!("turnout {} ({}) is locked: a route holds it for a train, so it isn't {words} until the route lets it go", self.address, self.name)));
+        }
+        self.move_to(closed, call)
+    }
+
+    /// The move itself, once allowed.
+    fn move_to(&self, closed: bool, call: &mut Call) -> Result<(), Error> {
+        let words = if closed { "closed" } else { "thrown" };
         let output = closed != self.inverted;
         self.base.send_now(dcc::accessory(self.address, output, true), format!("turnout {} ({}): {words}", self.address, self.name), 2, call)?;
         self.base.send_now(dcc::accessory(self.address, output, false), format!("turnout {} ({}): let go", self.address, self.name), 1, call)?;
@@ -307,7 +334,7 @@ impl Turnout {
 
 impl Follower for Turnout {
     fn source_closed(&self) {
-        self.events.keep_running(false);
+        self.events.keep_running(self.is_live());
         self.followers.tell_closed();
     }
 
@@ -347,7 +374,7 @@ impl Object for Turnout {
             }),
             "sensors" => Value::list(self.sensors.iter().map(|s| call.object_value(s)).collect::<Vec<_>>()),
             "move_time" => Value::from(self.move_time),
-            "locked" => Value::from(self.locked.get()),
+            "locked" => Value::from(self.is_locked()),
             "base" => call.object_value(&self.base),
             other => return Err(call.unknown_property("turnout", other, PROPS)),
         })

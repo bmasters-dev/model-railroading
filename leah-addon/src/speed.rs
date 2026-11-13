@@ -91,7 +91,7 @@ pub fn new_speedometer(call: &mut Call) -> Result<Value, Error> {
 
 impl Follower for Speedometer {
     fn source_closed(&self) {
-        self.events.keep_running(false);
+        self.events.keep_running(self.first.is_live() || self.second.is_live());
     }
 
     fn followed_changed(&self, _call: &Call) {

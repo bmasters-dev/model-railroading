@@ -83,6 +83,8 @@ pub struct DccBase {
     /// sent again if the board starts again by itself.
     sensors: RefCell<Vec<Weak<crate::sensor::Sensor>>>,
     watches: RefCell<BTreeMap<u8, bool>>,
+    /// Settling the board's pins (take_heard's outermost call), so a call inside it leaves them be.
+    taking_pins: Cell<bool>,
 }
 
 thread_local! {
@@ -184,6 +186,7 @@ pub fn new_base(call: &mut Call) -> Result<Value, Error> {
         phone_servers: RefCell::new(Vec::new()),
         sensors: RefCell::new(Vec::new()),
         watches: RefCell::new(BTreeMap::new()),
+        taking_pins: Cell::new(false),
     };
     if simulate {
         if !call.args.is_empty() || reader_port.is_some() {
@@ -248,7 +251,7 @@ impl DccBase {
     pub(crate) fn take_heard(&self, call: &Call) {
         let Some(link) = self.link.borrow().as_ref().map(|l| l.heard.clone()) else { return };
         let mut restarted = false;
-        let (packets, said, timing, gone, reader_gone, pins) = {
+        let (packets, said, timing, gone, reader_gone) = {
             let mut h = link.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(shield) = h.shield {
                 self.shield.set(shield);
@@ -262,7 +265,7 @@ impl DccBase {
                 self.hellos.set(h.base_hellos);
                 restarted = true;
             }
-            (std::mem::take(&mut h.packets), std::mem::take(&mut h.base_said), h.timing.clone(), h.gone.clone(), h.reader_gone.take(), std::mem::take(&mut h.pins))
+            (std::mem::take(&mut h.packets), std::mem::take(&mut h.base_said), h.timing.clone(), h.gone.clone(), h.reader_gone.take())
         };
         if timing.is_some() {
             *self.timing.borrow_mut() = timing;
@@ -331,9 +334,18 @@ impl DccBase {
             self.power_now(false);
             *self.lost.borrow_mut() = Some(gone);
         }
-        // (The pins last, after the packets, timing, and words taken with them: a sensor's followers may
-        // send packets, which take in what came since, newer than these; those are handled in order.)
-        if !pins.is_empty() {
+        // (The pins last, after the packets, timing, and words heard with them, and only by the
+        // outermost call: a sensor's followers may send packets, which take in what came since; the
+        // pins newer than those being settled wait for this loop, so each pin's changes settle in the
+        // order the board said them.)
+        if self.taking_pins.replace(true) {
+            return;
+        }
+        loop {
+            let pins = std::mem::take(&mut link.lock().unwrap_or_else(|p| p.into_inner()).pins);
+            if pins.is_empty() {
+                break;
+            }
             let sensors: Vec<_> = self.sensors.borrow().iter().filter_map(Weak::upgrade).collect();
             for (pin, high) in pins {
                 for s in sensors.iter().filter(|s| s.pin() == Some(pin)) {
@@ -341,6 +353,12 @@ impl DccBase {
                 }
             }
         }
+        self.taking_pins.set(false);
+    }
+
+    /// Whether its board is open and answering: a sensor on it may change while the script waits.
+    pub(crate) fn board_open(&self) -> bool {
+        !self.simulated() && self.link.borrow().is_some() && self.lost.borrow().is_none()
     }
 
     /// A free place in the board's refresh table (None when all are in use).
