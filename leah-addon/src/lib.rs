@@ -21,6 +21,7 @@ mod programmer;
 mod roster;
 mod sensor;
 mod turnout;
+mod wait;
 
 use leah_addon_kit::{Function, Needs, Value};
 
@@ -69,6 +70,8 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("light", &[], light::new_light as Function),
             ("block", &[], block::new_block as Function),
             ("layout", &[], layout::new_layout as Function),
+            ("wait_for", &[], wait::wait_for as Function),
+            ("wait_for_any", &[], wait::wait_for_any as Function),
             ("write_layout_file", &[Needs::Files], layout::write_layout_file as Function),
             ("read_layout_file", &[Needs::Files], layout::read_layout_file as Function),
         ],

@@ -2683,3 +2683,64 @@ write_layout_file(): the turnout "Yard lead" reads "Yard points", which isn't in
     );
     assert!(run.stderr.contains("the layout has nothing named \"yard led\": did you mean \"Yard lead\"?"), "{}", run.stderr);
 }
+
+#[test]
+fn wait_for_waits_until_a_state_or_its_timeout() {
+    // On the simulated base station: a sensor's delay, a slow turnout's move time, and a light's
+    // pulse, each waited out; a timeout; several waited for at once; and the mistakes.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$s = sensor(22, inactive_delay: 150)
+$s.simulate("active")
+$s.simulate("inactive")
+$start = milliseconds()
+print([wait_for($s, "inactive", timeout: 2000), milliseconds() - $start >= 140])
+$t = turnout(5, move_time: 120)
+$t.throw()
+print([$t.state, wait_for($t, "thrown"), $t.state])
+$lamp = light(30)
+$lamp.pulse(100)
+print([$lamp.on, wait_for($lamp, "off", timeout: 2000), $lamp.on])
+print(wait_for($s, "active", timeout: 50))
+$b = block("Yard")
+$other = sensor(23, active_delay: 80)
+$other.simulate("active")
+print(wait_for_any([[$b, "occupied"], [$other, "active"]], timeout: 2000))
+print(wait_for_any([[$b, "occupied"]], timeout: 30))
+foreach [function() { wait_for($s, "on") }, function() { wait_for(3, "on") }, function() { wait_for_any([$s]) }, function() { wait_for($s, "active", timeout: -1) }] as $f {
+    try {
+        $f()
+    } catch $e {
+        print($e.message)
+    }
+}
+"#;
+    let run = run("wait-for", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        r#"[true, true]
+["moving", true, "thrown"]
+[true, true, false]
+false
+1
+
+wait_for(): the state of a sensor is "active" or "inactive", not "on"
+wait_for() waits for a sensor, a turnout, a block, or a light, not 3
+wait_for_any() takes a list of pairs, each a thing and the state waited for ([[$sensor, "active"], [$block, "free"]]), not a sensor
+wait_for()'s `timeout:` is milliseconds, 0 to 86400000 (null: no limit), not -1
+"#
+    );
+}
+
+#[test]
+fn wait_for_hears_the_boards_pin_while_it_waits() {
+    let Some(boards) = fake_boards(&["--pins", "22:0@0.6"]) else {
+        eprintln!("skipped: no python3 for the stand-in boards");
+        return;
+    };
+    let script = format!("$base = dcc_base(\"{}\")\n$s = sensor(22)\nprint(wait_for($s, \"active\", timeout: 5000))\n$base.close()\n", boards.base);
+    let run = run("wait-for-board", &script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(run.stdout, "true\n");
+}

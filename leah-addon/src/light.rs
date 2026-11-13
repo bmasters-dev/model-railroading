@@ -88,6 +88,10 @@ impl Light {
         Value::map(pairs)
     }
 
+    pub(crate) fn is_on(&self) -> bool {
+        self.on.get() == Some(true)
+    }
+
     /// What it follows, by name, and the state of it that turns it on.
     pub(crate) fn followed(&self) -> Option<(String, &'static str)> {
         Some(match self.following.borrow().as_ref()? {
