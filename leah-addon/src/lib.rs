@@ -25,6 +25,7 @@ mod programmer;
 mod roster;
 mod route;
 mod sensor;
+mod signal;
 mod sim;
 mod speed;
 mod switchboard;
@@ -87,6 +88,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("layout_simulator", &[], sim::new_simulator as Function),
             ("auto_train", &[], auto::new_auto_train as Function),
             ("speedometer", &[], speed::new_speedometer as Function),
+            ("signal_head", &[], signal::new_signal_head as Function),
             ("scale_speed", &[], speed::scale_speed as Function),
             ("wait_for", &[], wait::wait_for as Function),
             ("wait_for_any", &[], wait::wait_for_any as Function),
@@ -110,6 +112,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("layout", &["names", "count", "turnouts", "sensors", "lights", "blocks"], &["add", "find", "remove"], &[]),
             ("route", &["name", "settings", "blocks", "delay", "busy", "aligned", "reserved"], &["set", "reserve", "release"], &["on_set", "on_aligned", "on_released"]),
             ("track_plan", &["blocks", "connections"], &["connect", "set_cost", "cost", "neighbours", "find_path"], &[]),
+            ("signal_head", &["name", "aspect", "held", "lamps", "automatic"], &["protect", "stop_protecting"], &["on_changed"]),
             ("speedometer", &["sensors", "distance", "scale", "last_speed", "last_scale_kmh", "last_scale_mph"], &[], &["on_measured"]),
             ("auto_train", &["locomotive", "route", "state", "block", "max_speed", "approach_speed", "direction"], &["start", "halt", "resume", "emergency_stop"], &["on_departed", "on_block_entered", "on_arrived", "on_blocked"]),
             ("layout_simulator", &["plan", "trains", "top_speed", "block_length", "running"], &["add_train", "remove_train", "set_length", "length", "start", "stop"], &["on_train_entered", "on_train_stopped"]),

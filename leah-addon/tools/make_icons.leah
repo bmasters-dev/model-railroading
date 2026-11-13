@@ -200,6 +200,13 @@ $icons["layout_button"] = function() {
     ic.stroke([[3, 10.5], [13, 10.5]], ic.face, 1.5)
     ic.stroke([[6, 10.5], [12, 5.5]], ic.face, 1.5)
 }
+` A signal head: a dark target with a green lamp lit, on its mast.
+$icons["signal_head"] = function() {
+    ic.rfill(4, 0.5, 8, 11, ic.ink, 3)
+    ic.circle(6, 2, 4, 4, "#4A5160")
+    ic.circle(6, 6.5, 4, 4, ic.green)
+    ic.fill(7.25, 11.5, 1.5, 4, ic.edge)
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)

@@ -97,6 +97,17 @@ impl Light {
         self.switch(self.on.get() != Some(true), call)
     }
 
+    /// Switched on or off, as setting `on` does (a signal head's lamps).
+    pub(crate) fn switch_to(&self, on: bool, call: &Call) -> Result<(), Error> {
+        self.pulses.set(self.pulses.get() + 1);
+        self.switch(on, call)
+    }
+
+    /// Known to be off (never switched: not known, maybe lit on the layout).
+    pub(crate) fn is_off(&self) -> bool {
+        self.on.get() == Some(false)
+    }
+
     pub(crate) fn is_on(&self) -> bool {
         self.on.get() == Some(true)
     }

@@ -3331,3 +3331,51 @@ fn the_layout_panel_serves_a_web_panel_a_browser_taps() {
     let Some(printed) = run_example_on_screen_with("web-panel", "layout_panel.leah", None, driver, 15000, &[("LEAH_TEST_PHONE_SERVER", "1")]) else { return };
     assert!(printed.contains("[200, true]\n[7, \"track\", \"West main\", \"turnout\", \"unknown\"]\n[\"tapped\", \"West points\", \"closed\"]\n"), "{printed}");
 }
+
+#[test]
+fn a_signal_head_shows_automatic_block_aspects() {
+    // A three-lamp head guarding Main (then East main), with the east points to lie closed: green
+    // while all is clear, yellow with East main occupied, red with Main occupied or the points thrown,
+    // red while held; a two-lamp head shows red for yellow.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$main = block("Main", sensor: sensor(22))
+$east = block("East main", sensor: sensor(23))
+$points = turnout(5)
+$points.close()
+$head = signal_head(name: "West home", red: light(30), yellow: light(31), green: light(32))
+print([$head.aspect, $head.automatic])
+$head.protect([$main, $east], turnouts: [[$points, "closed"]])
+print([$head.aspect, $head.automatic, $base.accessory(32), $base.accessory(30)])
+$east.sensor.simulate("active")
+print($head.aspect)
+$main.sensor.simulate("active")
+print($head.aspect)
+$main.sensor.simulate("inactive")
+$east.sensor.simulate("inactive")
+$points.throw()
+print($head.aspect)
+$points.close()
+$head.held = true
+print($head.aspect)
+$head.held = false
+print($head.aspect)
+try {
+    $head.aspect = "green"
+} catch $e {
+    print($e.message)
+}
+$two = signal_head(red: light(40), green: light(41))
+$two.aspect = "yellow"
+print($two.aspect)
+$head.on_changed = function($aspect) {
+    print("now " + $aspect)
+}
+"#;
+    let run = run("signal-head", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        "[\"dark\", false]\n[\"green\", true, \"closed\", \"thrown\"]\nyellow\nred\nred\nred\ngreen\nsignal West home is automatic: its aspect comes from what it protects (stop_protecting() first, or hold it with held)\nred\nnow green\nnow yellow\nnow red\nnow yellow\nnow green\nnow red\nnow green\nnow red\nnow green\n"
+    );
+}
