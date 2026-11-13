@@ -31,7 +31,7 @@ $win.show()
 
 **Entry and exit:** with [plan](#plan) set, the first block clicked becomes the entry (outlined in white), and the second one the exit. The path between them is found ([find_path](ref:track_plan#find_path)), held ([reserve](ref:route#reserve)), and set ([set](ref:route#set)). [on_route_set](#on_route_set) gives the route, or [on_route_refused](#on_route_refused) says there was no clear path. A block clicked twice, or [cancel_entry](#cancel_entry), lets go of the entry.
 
-The example app `layout_panel.leah` is a passing siding drawn this way, its turnouts on accessory decoder outputs 1 and 2 and its detectors on the board's pins 22 to 25, with a train run along the path lined on the simulated base station.
+The example app `layout_panel.leah` is a passing siding drawn this way, its turnouts on accessory decoder outputs 1 and 2 and its detectors on the board's pins 22 to 25, with a simulated train ([layout_simulator](ref:layout_simulator)) run along the path lined on the simulated base station.
 
 ## Making one
 

@@ -6,14 +6,16 @@
 `
 ` On the panel: click a turnout's points to throw it; click one block, then another, to line and hold
 ` the path between them (entry and exit), which goes around occupied track and lets each block go as
-` the train clears it. On the simulated base station, "Run a train" sends an imaginary train along the
-` last path lined, block by block.
+` the train clears it. On the simulated base station, a simulated train (locomotive 3) waits in West
+` main: "Run the train" runs it along the turnouts' ways until the track ends, and again back.
 
 $base = null
 $plan = null
 $blocks = []
 $detectors = []
 $last_route = null
+$sim = null
+$train = null
 
 $win = window(title: "Layout panel", width: 640, height: 330, minimum_width: 600, minimum_height: 300)
 
@@ -31,14 +33,14 @@ $win.add($panel)
 
 $state = label(left: 20, top: 248, width: 600, lock_right: true, lock_top: false, lock_bottom: true, text: "Not connected")
 $win.add($state)
-$run = button(left: 20, top: 278, width: 140, height: 34, text: "Run a train", enabled: false, lock_top: false, lock_bottom: true)
+$run = button(left: 20, top: 278, width: 140, height: 34, text: "Run the train", enabled: false, lock_top: false, lock_bottom: true)
 $win.add($run)
 $clear = button(left: 170, top: 278, width: 140, height: 34, text: "Let go of paths", enabled: false, lock_top: false, lock_bottom: true)
 $win.add($clear)
 
 ` The layout: four blocks, two turnouts, and how they join.
 function build_layout() {
-    global $base, $plan, $blocks, $detectors, $panel
+    global $base, $plan, $blocks, $detectors, $panel, $sim, $train
     $west_points = turnout(1, name: "West points")
     $east_points = turnout(2, name: "East points")
     $names = ["West main", "Main", "Siding", "East main"]
@@ -71,6 +73,18 @@ function build_layout() {
     $panel.add_turnout($east_points, [22, 5], closed_to: [20, 5], thrown_to: [20, 3], block: $blocks[3])
     $panel.add_track($blocks[3], [[22, 5], [29, 5]])
     $panel.add_label("Click a turnout to throw it; a block, then another, to line a path", [15, 8])
+    ` (On the simulated base station: a simulated train in West main, facing east.)
+    if $base.simulate {
+        $sim = layout_simulator($plan, top_speed: 100)
+        $train = locomotive(3)
+        $sim.add_train($train, $blocks[0], toward: $blocks[1], length: 30)
+        $sim.on_train_stopped = function($loco, $block) {
+            global $state
+            $loco.speed = 0
+            $state.text = "The train stopped in " + $block.name + ": the track ends, or the points are set against it"
+        }
+        $sim.start()
+    }
     return $note
 }
 
@@ -86,6 +100,10 @@ function connected($on) {
 $connect.on_click = function() {
     global $base, $port, $state, $panel
     if $base != null {
+        if $sim != null {
+            $sim.stop()
+            $sim = null
+        }
         $base.close()
         $base = null
         $panel.clear()
@@ -139,31 +157,22 @@ $clear.on_click = function() {
     $state.text = "Paths let go"
 }
 
-` An imaginary train along the last path lined: each block occupied in turn, the one behind cleared.
+` The simulated train: run it (the other way after it stopped), or stop it.
 $run.on_click = function() {
-    global $last_route, $state
-    if $last_route == null or not $last_route.reserved {
-        $state.text = "Line a path first: click a block, then another"
+    global $train, $state, $run
+    if $train.speed > 0 {
+        $train.speed = 0
+        $run.text = "Run the train"
         return
     }
-    $state.text = "A train runs " + $last_route.name
-    step_train($last_route.blocks, 0)
-}
-
-function step_train($path, $i) {
-    if $i > count($path) {
-        return
+    if $train.direction == "forward" and $state.text != "" and contains($state.text, "stopped") {
+        $train.direction = "reverse"
+    } else if contains($state.text, "stopped") {
+        $train.direction = "forward"
     }
-    if $i < count($path) {
-        $path[$i].sensor.simulate("active")
-    }
-    if $i > 0 {
-        $path[$i - 1].sensor.simulate("inactive")
-    }
-    ` (The panel shows each block as its detector says.)
-    call_later(900, function() {
-        step_train($path, $i + 1)
-    })
+    $train.speed_percent = 60
+    $run.text = "Stop the train"
+    $state.text = "The train runs " + $train.direction
 }
 
 $port.add_row("Simulated (no board)", tag: "simulate")

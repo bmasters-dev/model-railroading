@@ -2902,10 +2902,11 @@ print($server.port)
 #[test]
 fn the_layout_panel_lines_a_path_and_runs_a_train_along_it() {
     // On the simulated base station: Connect, power on, West main then East main picked (entry and
-    // exit), a train run along the path; the path's first blocks let go as the train clears them.
-    let driver = "call_later(300, function() {\n    global $connect, $power, $panel, $blocks\n    $connect.click()\n    $power.click()\n    $panel.pick_block($blocks[0])\n    $panel.pick_block($blocks[3])\n    call_later(200, function() {\n        global $state, $blocks, $run\n        print($state.text)\n        print([$blocks[1].reserved_by, $blocks[2].reserved])\n        $run.click()\n        call_later(6500, function() {\n            global $blocks\n            print([$blocks[0].reserved, $blocks[1].reserved, $blocks[3].reserved, $blocks[3].occupied])\n            quit()\n        })\n    })\n})\n";
+    // exit), the simulated train run along the path to the end of the track; the path's first blocks
+    // let go as the train clears them, the last held while it stands there.
+    let driver = "call_later(300, function() {\n    global $connect, $power, $panel, $blocks\n    $connect.click()\n    $power.click()\n    $panel.pick_block($blocks[0])\n    $panel.pick_block($blocks[3])\n    call_later(200, function() {\n        global $state, $blocks, $run\n        print($state.text)\n        print([$blocks[1].reserved_by, $blocks[2].reserved])\n        $run.click()\n        call_later(8000, function() {\n            global $blocks, $state\n            print([$blocks[0].reserved, $blocks[1].reserved, $blocks[3].reserved, $blocks[3].occupied])\n            print($state.text)\n            quit()\n        })\n    })\n})\n";
     let Some(printed) = run_example_on_screen_with("layout-panel", "layout_panel.leah", None, driver, 15000, &[]) else { return };
-    assert!(printed.contains("Lined and held: West main to East main (3 blocks)\n[\"West main to East main\", false]\n[false, false, false, false]\n"), "{printed}");
+    assert!(printed.contains("Lined and held: West main to East main (3 blocks)\n[\"West main to East main\", false]\n[false, false, true, true]\nThe train stopped in East main: the track ends, or the points are set against it\n"), "{printed}");
 }
 
 #[test]
@@ -2976,4 +2977,57 @@ print($server.port)
     phone.say("Q");
     let (ok, err) = run.end();
     assert!(ok, "{err}");
+}
+
+#[test]
+fn the_layout_simulator_runs_a_train_through_the_blocks_its_turnouts_lead_to() {
+    // A passing loop. A train runs east from West main through Main (both turnouts closed) and stops at
+    // the end of East main; turned round, it runs back into Main and stops at the west points set
+    // against it, then, once they are closed, goes on and stops at the end of West main, never back
+    // through the points it came through. Blocks are occupied as it covers them.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$t1 = turnout(1)
+$t2 = turnout(2)
+$t1.close()
+$t2.close()
+$names = ["West main", "Main", "Siding", "East main"]
+$b = []
+foreach $names as $i: $n {
+    $b[] = block($n, sensor: sensor($i + 22))
+}
+$plan = track_plan()
+$plan.connect($b[0], $b[1], turnout: $t1, position: "closed")
+$plan.connect($b[0], $b[2], turnout: $t1, position: "thrown")
+$plan.connect($b[1], $b[3], turnout: $t2, position: "closed")
+$plan.connect($b[2], $b[3], turnout: $t2, position: "thrown")
+$sim = layout_simulator($plan, top_speed: 400)
+$loco = locomotive(3)
+$sim.add_train($loco, $b[0], toward: $b[1], length: 30)
+print([$b[0].occupied, $b[1].occupied, $sim.trains[0]["block"].name])
+$sim.on_train_entered = function($l, $block) {
+    print("entered " + $block.name)
+}
+$sim.on_train_stopped = function($l, $block) {
+    print("stopped in " + $block.name)
+}
+$sim.start()
+$loco.speed_percent = 100
+sleep(1500)
+print([$b[0].occupied, $b[1].occupied, $b[3].occupied, $sim.trains[0]["stopped"]])
+$t1.throw()
+$loco.direction = "reverse"
+sleep(1500)
+print([$b[1].occupied, $b[3].occupied, $sim.trains[0]["block"].name])
+$t1.close()
+sleep(1500)
+print([$b[0].occupied, $b[1].occupied, $sim.trains[0]["block"].name])
+$sim.stop()
+"#;
+    let run = run("simulator", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        "[true, false, \"West main\"]\nentered Main\nentered East main\nstopped in East main\n[false, false, true, true]\nentered Main\nstopped in Main\n[true, false, \"Main\"]\nentered West main\nstopped in West main\n[true, false, \"West main\"]\n"
+    );
 }

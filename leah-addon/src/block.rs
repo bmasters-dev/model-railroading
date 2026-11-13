@@ -77,6 +77,15 @@ impl Block {
         Value::map(pairs)
     }
 
+    /// Occupied or free, said by the layout simulator: through its sensor, or, without one, as the
+    /// script's `occupied` would say it.
+    pub(crate) fn simulate_occupied(&self, occupied: bool, call: &Call) {
+        match &self.sensor {
+            Some(s) => s.simulate_now(occupied, call),
+            None => self.now(Some(occupied), call),
+        }
+    }
+
     /// Held by a route, or let go: its followers (a track diagram) told.
     pub(crate) fn reserve_for(&self, route: Option<&str>, call: &Call) {
         *self.reserved_by.borrow_mut() = route.map(str::to_string);

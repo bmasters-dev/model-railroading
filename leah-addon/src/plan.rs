@@ -28,6 +28,10 @@ const MOST_BLOCKS: i64 = 64;
 /// The most paths looked at before giving up (a plan with many loops).
 const MOST_TRIED: usize = 200_000;
 
+/// A way out of a block: the block reached, and the turnout (and the way it lies) the connection goes
+/// through, if any.
+pub(crate) type Exit = (Rc<Block>, Option<(Rc<Turnout>, bool)>);
+
 /// One connection: two blocks (by their place in `blocks`), through a turnout lying a way, or plainly;
 /// a one-way one only from `a` to `b`.
 struct Joint {
@@ -129,6 +133,15 @@ impl TrackPlan {
         let name = format!("{} to {}", from.name(), to.name());
         drop(joints);
         Ok(route::make(call, name, settings, route_blocks, delay))
+    }
+
+    /// The ways a train can leave a block: each block it reaches, and the turnout (and its way) the
+    /// connection goes through, if any (a one-way connection only from its first block).
+    pub(crate) fn ways_from(&self, b: &Rc<Block>) -> Vec<Exit> {
+        let Some(i) = self.found(b) else { return Vec::new() };
+        let blocks = self.blocks.borrow();
+        let joints = self.joints.borrow();
+        self.exits(i).into_iter().map(|(n, j)| (blocks[n].clone(), joints[j].turnout.clone())).collect()
     }
 
     fn found(&self, b: &Rc<Block>) -> Option<usize> {

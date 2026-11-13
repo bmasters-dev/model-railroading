@@ -205,6 +205,11 @@ impl Sensor {
         }
     }
 
+    /// Changed as `simulate()` changes it (the layout simulator's trains).
+    pub(crate) fn simulate_now(&self, active: bool, call: &Call) {
+        self.raw_now(active, call);
+    }
+
     /// The pin's level the board said (true: high).
     pub(crate) fn heard(&self, high: bool, call: &Call) {
         self.raw_now(high == self.inverted, call);

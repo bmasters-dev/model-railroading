@@ -236,11 +236,12 @@ impl Route {
         if !self.held.borrow().is_empty() {
             return true;
         }
-        for b in &self.blocks {
+        for (i, b) in self.blocks.iter().enumerate() {
             if let Some(s) = b.sensor() {
                 s.catch_up(call);
             }
-            if b.is_occupied() == Some(true) {
+            // (The first block is the train's own, where it waits: occupied by it.)
+            if i > 0 && b.is_occupied() == Some(true) {
                 call.warn(format!("route {} can't be reserved: block {} is occupied", self.name, b.name()));
                 return false;
             }
@@ -253,7 +254,8 @@ impl Route {
             call.warn(format!("route {} can't be reserved: turnout {} is locked the other way", self.name, t.name()));
             return false;
         }
-        *self.held.borrow_mut() = vec![(true, false); self.blocks.len()];
+        // (The train's own block, occupied already, is let go once it leaves it.)
+        *self.held.borrow_mut() = self.blocks.iter().map(|b| (true, b.is_occupied() == Some(true))).collect();
         for (t, _) in &self.settings {
             t.lock(true);
         }

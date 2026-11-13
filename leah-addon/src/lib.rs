@@ -24,6 +24,7 @@ mod programmer;
 mod roster;
 mod route;
 mod sensor;
+mod sim;
 mod turnout;
 mod wait;
 
@@ -78,6 +79,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("track_plan", &[], plan::new_plan as Function),
             ("track_diagram", &[], diagram::new_diagram as Function),
             ("fast_clock", &[], clock::new_clock as Function),
+            ("layout_simulator", &[], sim::new_simulator as Function),
             ("wait_for", &[], wait::wait_for as Function),
             ("wait_for_any", &[], wait::wait_for_any as Function),
             ("write_layout_file", &[Needs::Files], layout::write_layout_file as Function),
@@ -100,6 +102,7 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("layout", &["names", "count", "turnouts", "sensors", "lights", "blocks"], &["add", "find", "remove"], &[]),
             ("route", &["name", "settings", "blocks", "delay", "busy", "aligned", "reserved"], &["set", "reserve", "release"], &["on_set", "on_aligned", "on_released"]),
             ("track_plan", &["blocks", "connections"], &["connect", "set_cost", "cost", "neighbours", "find_path"], &[]),
+            ("layout_simulator", &["plan", "trains", "top_speed", "block_length", "running"], &["add_train", "remove_train", "set_length", "length", "start", "stop"], &["on_train_entered", "on_train_stopped"]),
             ("fast_clock", &["time", "rate", "running", "alarms", "hour", "minute"], &["start", "stop", "set_time"], &["on_minute", "on_alarm"]),
             ("phone_throttle_server", &["name", "port", "running", "clients", "heartbeat", "turnouts", "routes", "clock", "base", "roster"], &["add_turnout", "set_turnout", "remove_turnout", "add_route", "set_route", "remove_route", "set_clock", "stop_clock", "message", "close"], &["on_client", "on_client_left", "on_turnout_request", "on_route_request"]),
         ],
