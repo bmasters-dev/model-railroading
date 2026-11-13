@@ -105,6 +105,37 @@ $icons["turnout"] = function() {
     ic.stroke([[5, 13], [10, 9], [15, 4]], ic.accent, 2)
     ic.fill(4, 11.5, 2.5, 3, ic.green)
 }
+` A sensor: a detector box beside a rail, its lamp lit.
+$icons["sensor"] = function() {
+    ic.rbox(3, 2, 10, 8, ic.face, ic.edge, 1.5)
+    ic.circle(6, 4, 4, 4, ic.green)
+    ic.fill(7.5, 10, 1, 2.5, ic.edge)
+    ic.fill(0, 12.5, 16, 1, ic.edge)
+    ic.fill(0, 14.5, 16, 1, ic.edge)
+}
+` A light: a lamp post, its lamp glowing.
+$icons["light"] = function() {
+    ic.circle(3.5, 0, 9, 9, "#FCEBB0")
+    ic.circle(5.5, 2, 5, 5, ic.yellow, ic.orange)
+    ic.fill(7.25, 7, 1.5, 7, ic.edge)
+    ic.fill(5, 14, 6, 1.5, ic.ink)
+}
+` A block: a stretch of rail between two joints, lit as occupied.
+$icons["block"] = function() {
+    ic.fill(0, 6.5, 16, 1, ic.edge)
+    ic.fill(0, 9.5, 16, 1, ic.edge)
+    ic.fill(3.5, 5.5, 9, 6, ic.accent)
+    ic.fill(3.5, 6.5, 9, 1, ic.accent_dark)
+    ic.fill(3.5, 9.5, 9, 1, ic.accent_dark)
+    ic.fill(2.5, 4, 1, 9, ic.ink)
+    ic.fill(12.5, 4, 1, 9, ic.ink)
+}
+` A layout: a small track plan, an oval loop with a siding leaving it, a train on the loop.
+$icons["layout"] = function() {
+    ic.turned_outline(0, 0, 0, 14, 10, 4.5, ic.edge, 1.5)
+    ic.stroke([[4, 12.5], [8, 9.5], [12, 9.5]], ic.edge, 1.5)
+    ic.rfill(5, 1.5, 6, 3, ic.accent, 1)
+}
 
 $sizes = [16, 32]
 ` (One date for every entry, so the pack only changes when an icon does.)
