@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "leah-addon-kit"
-version = "0.1.0-alpha.51"
+version = "0.1.0-alpha.52"
 
 [[package]]
 name = "leah-addon-model-railroading"
