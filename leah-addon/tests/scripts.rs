@@ -3287,3 +3287,47 @@ fn a_layout_button_shows_one_object() {
     let Some(printed) = run_example_on_screen_with("layout-button", "switchboard.leah", None, driver, 10000, &[]) else { return };
     assert!(printed.contains("Output 1\n\ntype_error\n"), "{printed}");
 }
+
+#[test]
+fn the_layout_panel_serves_a_web_panel_a_browser_taps() {
+    // Connect (simulated), power on, start the web panel; fetch its page, then speak to it as the
+    // page's code does: the pieces come, a tap on the west points (piece 1) throws them, and every
+    // browser gets the pieces again.
+    let driver = r#"call_later(300, function() {
+    global $connect, $power, $serve
+    $connect.click()
+    $power.click()
+    $serve.click()
+    call_later(500, function() {
+        global $web
+        $at = replace($web.address, "0.0.0.0", "127.0.0.1")
+        run_in_background(work: function() {
+            return http_get($at + "/")
+        }, done: function($answer) {
+            global $c, $web, $taps
+            $taps = 0
+            print([$answer["status"], contains($answer["body"], "<title>Layout panel</title>")])
+            $c = web_socket(address: replace(replace($web.address, "0.0.0.0", "127.0.0.1"), "http://", "ws://") + "/")
+            $c.on_json = function($m) {
+                global $taps
+                if not has_key($m, "pieces") {
+                    return
+                }
+                $p = $m["pieces"]
+                if $taps == 0 {
+                    print([count($p), $p[0]["kind"], $p[0]["name"], $p[1]["kind"], $p[1]["state"]])
+                    $taps = 1
+                    $me.send(["press": 1])
+                } else if $p[1]["state"] == "closed" {
+                    print(["tapped", $p[1]["name"], $p[1]["state"]])
+                    quit()
+                }
+            }
+            $c.connect()
+        })
+    })
+})
+"#;
+    let Some(printed) = run_example_on_screen_with("web-panel", "layout_panel.leah", None, driver, 15000, &[("LEAH_TEST_PHONE_SERVER", "1")]) else { return };
+    assert!(printed.contains("[200, true]\n[7, \"track\", \"West main\", \"turnout\", \"unknown\"]\n[\"tapped\", \"West points\", \"closed\"]\n"), "{printed}");
+}

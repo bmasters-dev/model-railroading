@@ -22,8 +22,8 @@ use crate::sensor::{as_follower, Follower, Sensor};
 use crate::turnout::Turnout;
 
 pub(crate) const PROPS: &[&str] = &["grid", "track_width", "show_names", "background_color", "plan", "entry"];
-pub(crate) const FUNCS: &[&str] = &["add_track", "add_turnout", "add_sensor", "add_light", "add_label", "add_clock", "clear", "pick_block", "cancel_entry"];
-pub(crate) const EVENTS: &[&str] = &["on_turnout_clicked", "on_block_clicked", "on_light_clicked", "on_sensor_clicked", "on_route_set", "on_route_refused"];
+pub(crate) const FUNCS: &[&str] = &["pieces", "press", "add_track", "add_turnout", "add_sensor", "add_light", "add_label", "add_clock", "clear", "pick_block", "cancel_entry"];
+pub(crate) const EVENTS: &[&str] = &["on_changed", "on_turnout_clicked", "on_block_clicked", "on_light_clicked", "on_sensor_clicked", "on_route_set", "on_route_refused"];
 
 type Point = (f64, f64);
 
@@ -297,18 +297,26 @@ impl TrackDiagram {
     /// A click, posted from GTK's handler: what it lands on is thrown, switched, or picked.
     fn clicked(&self, x: f64, y: f64, call: &mut Call) -> Result<(), Error> {
         let Some(i) = self.shown.hit(x, y) else { return Ok(()) };
+        self.press(i, call)
+    }
+
+    /// What a click on piece `i` does (a click, or `press()` from a web panel).
+    fn press(&self, i: usize, call: &mut Call) -> Result<(), Error> {
         enum Hit {
             Turnout(Rc<Turnout>),
             Block(Rc<Block>),
             Light(Rc<Light>),
             Sensor(Rc<Sensor>),
         }
-        let hit = match &self.shown.pieces.borrow()[i] {
+        let hit = match self.shown.pieces.borrow().get(i) {
+            None => return Ok(()),
+            Some(piece) => match piece {
             Piece::Turnout { turnout, .. } => Hit::Turnout(turnout.clone()),
             Piece::Track(Some(b), _) => Hit::Block(b.clone()),
             Piece::Light(l, _) => Hit::Light(l.clone()),
             Piece::Sensor(s, _) => Hit::Sensor(s.clone()),
             _ => return Ok(()),
+            },
         };
         match hit {
             Hit::Turnout(t) => {
@@ -380,6 +388,56 @@ impl TrackDiagram {
 impl Follower for TrackDiagram {
     fn followed_changed(&self, _call: &Call) {
         self.redraw();
+        // (For a web panel showing it too.)
+        self.events.fire("on_changed", vec![]);
+    }
+}
+
+fn point_value(p: Point) -> Value {
+    Value::list([Value::Float(p.0), Value::Float(p.1)])
+}
+
+fn block_word(b: Option<&Rc<Block>>) -> &'static str {
+    match b {
+        None => "free",
+        Some(b) if b.is_occupied() == Some(true) => "occupied",
+        Some(b) if b.reserved_by.borrow().is_some() => "reserved",
+        Some(b) if b.is_occupied().is_none() => "unknown",
+        Some(_) => "free",
+    }
+}
+
+impl TrackDiagram {
+    /// Its pieces as data, for a page drawing them its own way (a web panel).
+    fn pieces_value(&self) -> Value {
+        let entry = self.shown.entry.borrow().clone();
+        Value::list(self.shown.pieces.borrow().iter().map(|piece| match piece {
+            Piece::Track(b, points) => Value::map([
+                ("kind", Value::from("track")),
+                ("name", b.as_ref().map_or(Value::Null, |b| Value::from(b.name()))),
+                ("points", Value::list(points.iter().map(|p| point_value(*p)).collect::<Vec<_>>())),
+                ("state", Value::from(block_word(b.as_ref()))),
+                ("entry", Value::from(matches!((&entry, b), (Some(e), Some(b)) if Rc::ptr_eq(e, b)))),
+            ]),
+            Piece::Turnout { turnout, at, closed_to, thrown_to, block } => Value::map([
+                ("kind", Value::from("turnout")),
+                ("name", Value::from(turnout.name())),
+                ("at", point_value(*at)),
+                ("closed_to", point_value(*closed_to)),
+                ("thrown_to", point_value(*thrown_to)),
+                ("state", Value::from(turnout.state_word())),
+                ("block_state", Value::from(block_word(block.as_ref()))),
+                ("locked", Value::from(turnout.is_locked())),
+            ]),
+            Piece::Sensor(s, at) => Value::map([("kind", Value::from("sensor")), ("name", Value::from(s.name())), ("at", point_value(*at)), ("state", Value::from(match s.is_active() {
+                Some(true) => "active",
+                Some(false) => "inactive",
+                None => "unknown",
+            }))]),
+            Piece::Light(l, at) => Value::map([("kind", Value::from("light")), ("name", Value::from(l.name())), ("at", point_value(*at)), ("state", Value::from(if l.is_on() { "on" } else { "off" }))]),
+            Piece::Label(t, at) => Value::map([("kind", Value::from("label")), ("text", Value::from(t.as_str())), ("at", point_value(*at))]),
+            Piece::Clock(c, at) => Value::map([("kind", Value::from("clock")), ("text", Value::from(c.words())), ("at", point_value(*at)), ("running", Value::from(c.is_running()))]),
+        }).collect::<Vec<_>>())
     }
 }
 
@@ -530,6 +588,22 @@ impl Object for TrackDiagram {
                 call.only_options(&[])?;
                 self.shown.pieces.borrow_mut().clear();
                 self.shown.entry.borrow_mut().take();
+            }
+            "pieces" => {
+                call.count_between(0, 0)?;
+                call.only_options(&[])?;
+                return Ok(self.pieces_value());
+            }
+            "press" => {
+                call.count_between(1, 1)?;
+                call.only_options(&[])?;
+                let i = match call.arg(0).as_int() {
+                    Some(n) if n >= 0 && (n as usize) < self.shown.pieces.borrow().len() => n as usize,
+                    _ => return Err(Error::range_error(format!("{what}: a piece's place in pieces(), 0 to {}, not {}", self.shown.pieces.borrow().len().saturating_sub(1), describe(call.arg(0))))),
+                };
+                self.press(i, call)?;
+                self.events.fire("on_changed", vec![]);
+                return Ok(Value::Null);
             }
             "pick_block" => {
                 call.count_between(1, 1)?;

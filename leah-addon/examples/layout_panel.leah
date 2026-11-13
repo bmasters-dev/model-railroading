@@ -8,6 +8,9 @@
 ` the path between them (entry and exit), which goes around occupied track and lets each block go as
 ` the train clears it. On the simulated base station, a simulated train (locomotive 3) waits in West
 ` main: "Run the train" runs it along the turnouts' ways until the track ends, and again back.
+`
+` "Web panel" serves the same panel to any phone or tablet's browser on the Wi-Fi (port 8080, with the
+` web addon): a tap does what a click does, and every browser sees each change.
 
 $base = null
 $plan = null
@@ -16,6 +19,8 @@ $detectors = []
 $last_route = null
 $sim = null
 $train = null
+$web = null
+$sockets = []
 
 $win = window(title: "Layout panel", width: 640, height: 330, minimum_width: 600, minimum_height: 300)
 
@@ -37,6 +42,114 @@ $run = button(left: 20, top: 278, width: 140, height: 34, text: "Run the train",
 $win.add($run)
 $clear = button(left: 170, top: 278, width: 140, height: 34, text: "Let go of paths", enabled: false, lock_top: false, lock_bottom: true)
 $win.add($clear)
+$serve = button(left: 320, top: 278, width: 140, height: 34, text: "Web panel", enabled: false, lock_top: false, lock_bottom: true)
+$win.add($serve)
+
+` The page browsers are given: the panel drawn as SVG from the pieces Leah sends over a web socket.
+$page = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Layout panel</title>
+<style>
+body { margin: 0; background: #2b2f36; color: #dfe3e8; font-family: system-ui, sans-serif; }
+svg { width: 100%; height: auto; display: block; }
+p { margin: 8px 12px; }
+</style></head><body>
+<svg id="panel" viewBox="0 0 600 200"></svg><p id="said">Connecting...</p>
+<script>
+const G = 20, W = 5;
+const colors = {free: "#c8cdd5", occupied: "#e0393e", reserved: "#2ea44f", unknown: "#7a828e"};
+let ws;
+function line(points, color, width) {
+  return `<polyline points="${points.map(p => p[0]*G + "," + p[1]*G).join(" ")}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round"/>`;
+}
+function draw(pieces) {
+  let out = "";
+  pieces.forEach((p, i) => {
+    const tap = `onclick="press(${i})" style="cursor:pointer"`;
+    if (p.kind === "track") {
+      out += `<g ${tap}>` + (p.entry ? line(p.points, "#fff", W + 4) : "") + line(p.points, colors[p.state], W) + line(p.points, "transparent", 24) + "</g>";
+      if (p.name) { const a = p.points[0], b = p.points[1]; out += `<text x="${(a[0]+b[0])/2*G}" y="${((a[1]+b[1])/2-0.6)*G}" fill="#dfe3e8" font-size="12" text-anchor="middle">${p.name}</text>`; }
+    } else if (p.kind === "turnout") {
+      const lying = p.state === "closed" ? p.closed_to : p.state === "thrown" ? p.thrown_to : null;
+      const other = p.state === "closed" ? p.thrown_to : p.state === "thrown" ? p.closed_to : null;
+      out += `<g ${tap}>`;
+      if (lying) { out += line([p.at, other], "#545c68", W) + line([p.at, lying], colors[p.block_state], W); }
+      else { out += line([p.at, p.closed_to], "#545c68", W) + line([p.at, p.thrown_to], "#545c68", W); }
+      if (p.locked) out += `<circle cx="${p.at[0]*G}" cy="${p.at[1]*G}" r="2.5" fill="#fff"/>`;
+      out += `<circle cx="${p.at[0]*G}" cy="${p.at[1]*G}" r="16" fill="transparent"/></g>`;
+    } else if (p.kind === "sensor" || p.kind === "light") {
+      const lit = p.state === "active" || p.state === "on";
+      out += `<circle ${tap} cx="${p.at[0]*G}" cy="${p.at[1]*G}" r="7" fill="${lit ? (p.kind === "light" ? "#f5c02c" : "#2ea44f") : "#545c68"}" stroke="#1a1a1e"/>`;
+    } else if (p.kind === "label" || p.kind === "clock") {
+      out += `<text x="${p.at[0]*G}" y="${p.at[1]*G}" fill="#dfe3e8" font-size="${p.kind === "clock" ? 22 : 12}" text-anchor="middle">${p.text}</text>`;
+    }
+  });
+  document.getElementById("panel").innerHTML = out;
+}
+function press(i) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({press: i})); }
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/");
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.pieces) draw(m.pieces); if (m.said !== undefined) document.getElementById("said").textContent = m.said; };
+  ws.onclose = () => { document.getElementById("said").textContent = "Leah went away: trying again..."; setTimeout(connect, 2000); };
+}
+connect();
+</script></body></html>'
+
+` Every browser shown the panel as it is now, with the window's words.
+function tell_browsers() {
+    global $sockets, $panel, $state
+    foreach $sockets as $s {
+        $s.send(["pieces": $panel.pieces(), "said": $state.text])
+    }
+}
+
+$serve.on_click = function() {
+    global $web, $serve, $state, $sockets, $page
+    if $web != null {
+        $web.close()
+        $web = null
+        $sockets = []
+        $serve.text = "Web panel"
+        return
+    }
+    try {
+        ` (Reachable from the network; tests use a free port of their own.)
+        $web = http_server(port: if environment_variable("LEAH_TEST_PHONE_SERVER", default: "") != "" then 0 else 8080, local_only: false)
+    } catch $e {
+        $state.text = "The web panel needs the web addon: " + $e.message
+        return
+    }
+    $web.on_request = function($request) {
+        global $page
+        return $page
+    }
+    $web.on_web_socket = function($socket) {
+        global $sockets, $panel
+        $sockets[] = $socket
+        $socket.on_json = function($m) {
+            global $panel
+            if has_key($m, "press") {
+                $panel.press($m["press"])
+            }
+        }
+        $socket.on_closed = function($code, $reason) {
+            global $sockets
+            $sockets = filter($sockets, function($s) {
+                return $s != $me
+            })
+        }
+        tell_browsers()
+    }
+    $web.on_error = function($message, $kind) {
+        global $state
+        $state.text = if $kind == "in_use" then "Port 8080 is in use by another program" else $message
+    }
+    $web.start()
+    $serve.text = "Stop web panel"
+    $state.text = "Web panel: open http://" + computer_name() + ".local:" + to_text($web.port) + " in a browser on the Wi-Fi"
+}
+$panel.on_changed = function() {
+    tell_browsers()
+}
 
 ` The layout: four blocks, two turnouts, and how they join.
 function build_layout() {
@@ -89,10 +202,11 @@ function build_layout() {
 }
 
 function connected($on) {
-    global $connect, $power, $run, $clear, $port, $base
+    global $connect, $power, $run, $clear, $port, $base, $serve
     $connect.text = if $on then "Disconnect" else "Connect"
     $power.enabled = $on
     $clear.enabled = $on
+    $serve.enabled = $on
     $run.enabled = $on and $base != null and $base.simulate
     $port.enabled = not $on
 }
@@ -136,10 +250,12 @@ $panel.on_route_set = function($route) {
     global $state, $last_route
     $last_route = $route
     $state.text = "Lined and held: " + $route.name + " (" + to_text(count($route.blocks)) + " blocks)"
+    tell_browsers()
 }
 $panel.on_route_refused = function($from, $to) {
     global $state
     $state.text = "No clear path from " + $from.name + " to " + $to.name + ": occupied, held, or locked"
+    tell_browsers()
 }
 $panel.on_block_clicked = function($block) {
     global $state, $panel

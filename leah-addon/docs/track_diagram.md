@@ -31,6 +31,8 @@ $win.show()
 
 **Entry and exit:** with [plan](#plan) set, the first block clicked becomes the entry (outlined in white), and the second one the exit. The path between them is found ([find_path](ref:track_plan#find_path)), held ([reserve](ref:route#reserve)), and set ([set](ref:route#set)). [on_route_set](#on_route_set) gives the route, or [on_route_refused](#on_route_refused) says there was no clear path. A block clicked twice, or [cancel_entry](#cancel_entry), lets go of the entry.
 
+**Web panels:** [pieces](#pieces) gives what the diagram shows as data, [press](#press) does what a click on a piece does, and [on_changed](#on_changed) says when anything shown changed: a page in a browser can draw the panel its own way and send taps back. The example app's "Web panel" serves it so, with the web addon's server, to any phone or tablet on the Wi-Fi.
+
 The example app `layout_panel.leah` is a passing siding drawn this way, its turnouts on accessory decoder outputs 1 and 2 and its detectors on the board's pins 22 to 25, with a simulated train ([layout_simulator](ref:layout_simulator)) run along the path lined on the simulated base station.
 
 ## Making one
@@ -63,12 +65,15 @@ Placed in a window as any control is, with its properties as settings.
 | [cancel_entry](#cancel_entry) | | |
 | [clear](#clear) | | |
 | [pick_block](#pick_block) | block | |
+| [pieces](#pieces) | | array |
+| [press](#press) | index | |
 
 ## Events
 
 | Name | Parameters | Returns |
 |---|---|---|
 | [on_block_clicked](#on_block_clicked) | block | |
+| [on_changed](#on_changed) | | |
 | [on_light_clicked](#on_light_clicked) | light | |
 | [on_route_refused](#on_route_refused) | from, to | |
 | [on_route_set](#on_route_set) | route | |
@@ -195,6 +200,31 @@ Takes every piece off the panel.
 
 Picks a block for entry and exit, as a click on it does: from the keyboard, or another control.
 
+---
+
+### pieces
+
+**pieces**() · array
+
+What it shows, in the order the pieces were added, each a map with its `kind`:
+
+| kind | Its keys |
+|---|---|
+| `"track"` | `name` (its block's, or `null`), `points`, `state` (`"free"`, `"occupied"`, `"reserved"`, `"unknown"`), `entry` (`true` while it is the entry picked) |
+| `"turnout"` | `name`, `at`, `closed_to`, `thrown_to`, `state` (the turnout's), `block_state` (as a track's), `locked` |
+| `"sensor"` | `name`, `at`, `state` (`"active"`, `"inactive"`, `"unknown"`) |
+| `"light"` | `name`, `at`, `state` (`"on"`, `"off"`) |
+| `"label"` | `text`, `at` |
+| `"clock"` | `text` (its time), `at`, `running` |
+
+---
+
+### press
+
+**press**(index)
+
+Does what a click on the piece at that place in [pieces](#pieces) does (from 0): throws a turnout, switches a light, picks a block. Another number is a `range_error`.
+
 ## Event descriptions
 
 ### on_block_clicked
@@ -202,6 +232,14 @@ Picks a block for entry and exit, as a click on it does: from the keyboard, or a
 **on_block_clicked**(block)
 
 A block's track was clicked.
+
+---
+
+### on_changed
+
+**on_changed**()
+
+Something it shows changed (a block, a turnout, a lamp, the clock), or a piece was pressed: a web panel's page is sent its [pieces](#pieces) again.
 
 ---
 
