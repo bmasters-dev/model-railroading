@@ -72,6 +72,10 @@ The motor shield's **B** screws are the **programming track**: a piece of track 
 | [roster_entry](ref:roster_entry) | One locomotive's record: its names, address, decoder settings, function labels, and more |
 | [turnout](ref:turnout) | A turnout moved by its accessory decoder: closed, thrown, toggled, with its feedback |
 | [sensor](ref:sensor) | An input from the layout on the board's pins: a block detector, a pushbutton, a track contact |
+| [light](ref:light) | An accessory output switched on and off, by itself following a sensor, a turnout, or a block |
+| [block](ref:block) | A stretch of track: occupied or free, by its detector, and the train in it |
+| [layout](ref:layout) | A railroad's turnouts, sensors, lights, and blocks, by name |
+| [Layout file functions](ref:Layout file functions) | A layout saved to a file and read back |
 | [phone_throttle_server](ref:phone_throttle_server) | Phone throttle apps that work with WiThrottle (Engine Driver, WiThrottle) driving the locomotives over the Wi-Fi |
 | [Decoder functions](ref:Decoder functions) | A decoder's maker, its configuration (CV 29) by name, and its definitions |
 | [DCC board functions](ref:DCC board functions) | The boards plugged in, and loading Leah's programs onto them |
@@ -95,4 +99,4 @@ The example app `browser_throttle.leah` is a throttle in any web browser, with n
 
 ## See also
 
-[Addons](ref:Addons), [dcc_base](ref:dcc_base), [locomotive](ref:locomotive), [decoder_definition](ref:decoder_definition), [decoder_programmer](ref:decoder_programmer), [consist](ref:consist), [roster](ref:roster), [roster_entry](ref:roster_entry), [turnout](ref:turnout), [sensor](ref:sensor), [phone_throttle_server](ref:phone_throttle_server), [Decoder functions](ref:Decoder functions), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job)
+[Addons](ref:Addons), [dcc_base](ref:dcc_base), [locomotive](ref:locomotive), [decoder_definition](ref:decoder_definition), [decoder_programmer](ref:decoder_programmer), [consist](ref:consist), [roster](ref:roster), [roster_entry](ref:roster_entry), [turnout](ref:turnout), [sensor](ref:sensor), [light](ref:light), [block](ref:block), [layout](ref:layout), [phone_throttle_server](ref:phone_throttle_server), [Decoder functions](ref:Decoder functions), [DCC board functions](ref:DCC board functions), [dcc_program_job](ref:dcc_program_job)

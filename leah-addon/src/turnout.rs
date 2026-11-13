@@ -12,14 +12,14 @@
 //! holding it under a train).
 
 use std::cell::Cell;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 use std::time::Duration;
 
 use leah_addon_kit::{Call, Error, Events, Object, Value};
 
 use crate::base::{describe, DccBase};
 use crate::dcc;
-use crate::sensor::{Follower, Sensor};
+use crate::sensor::{as_follower, Follower, Followers, Sensor};
 
 /// How long a turnout with sensors may take to move before its feedback is said not to agree, unless
 /// `move_time:` says otherwise.
@@ -41,6 +41,8 @@ pub struct Turnout {
     /// Counts the moves: a move's wait whose count is no longer the newest is over.
     moves: Cell<u64>,
     locked: Cell<bool>,
+    /// The lights following it.
+    pub(crate) followers: Followers,
     events: Events,
 }
 
@@ -139,6 +141,7 @@ pub fn new_turnout(call: &mut Call) -> Result<Value, Error> {
         known: Cell::new(Known::Unknown),
         moves: Cell::new(0),
         locked: Cell::new(false),
+        followers: Followers::default(),
         events,
     });
     if let Some(made) = call.own_value::<Turnout>(&value)
@@ -148,8 +151,7 @@ pub fn new_turnout(call: &mut Call) -> Result<Value, Error> {
             s.catch_up(call);
         }
         made.known.set(made.sensed());
-        let me: Rc<dyn Follower> = made.clone();
-        let me: Weak<dyn Follower> = Rc::downgrade(&me);
+        let me = as_follower(&made);
         for s in &made.sensors {
             s.follow(me.clone());
         }
@@ -160,6 +162,22 @@ pub fn new_turnout(call: &mut Call) -> Result<Value, Error> {
 impl Turnout {
     pub(crate) fn name(&self) -> &str {
         &self.name
+    }
+
+    /// How it is made, for a layout file: its constructor's settings, its sensors by name.
+    pub(crate) fn settings(&self) -> Value {
+        let mut pairs = vec![("name", Value::from(self.name.as_str())), ("address", Value::from(i64::from(self.address))), ("inverted", Value::from(self.inverted))];
+        match self.sensors.as_slice() {
+            [one] => pairs.push(("sensor", Value::from(one.name()))),
+            [closed, thrown] => pairs.push(("sensors", Value::list([Value::from(closed.name()), Value::from(thrown.name())]))),
+            _ => {}
+        }
+        pairs.push(("move_time", Value::from(self.move_time)));
+        Value::map(pairs)
+    }
+
+    pub(crate) fn sensors(&self) -> &[Rc<Sensor>] {
+        &self.sensors
     }
 
     /// "closed", "thrown", "unknown", "moving", or "inconsistent".
@@ -196,11 +214,13 @@ impl Turnout {
         }
     }
 
-    /// Where it lies now: said by its events and to the phones when it changed.
-    fn now(&self, known: Known) {
+    /// Where it lies now: said by its events, to the phones, and to the lights following it when it
+    /// changed.
+    fn now(&self, known: Known, call: &Call) {
         if self.known.replace(known) != known {
             crate::phone::turnout_changed(&self.base, self);
             self.events.fire("on_changed", vec![Value::from(known.word())]);
+            self.followers.tell(call);
         }
     }
 
@@ -239,13 +259,13 @@ impl Turnout {
             // (Lying its new way already, or nothing to wait for: no move waits.)
             self.events.keep_working(false);
         }
-        self.now(known);
+        self.now(known, call);
         Ok(())
     }
 
     /// Its move_time has passed: without sensors it lies its new way now; with them, sensors that
     /// don't agree are said by `on_mismatch`.
-    fn moved(&self, move_number: u64) {
+    fn moved(&self, move_number: u64, call: &Call) {
         if move_number != self.moves.get() {
             return;
         }
@@ -253,7 +273,7 @@ impl Turnout {
         let Some(closed) = self.commanded.get() else { return };
         let wanted = Known::of(Some(closed));
         if self.sensors.is_empty() {
-            self.now(wanted);
+            self.now(wanted, call);
         } else if self.known.get() != wanted {
             self.events.fire("on_mismatch", vec![Value::from(wanted.word()), Value::from(self.known.get().word())]);
         }
@@ -261,9 +281,9 @@ impl Turnout {
 }
 
 impl Follower for Turnout {
-    fn sensor_changed(&self, _sensor: &Sensor, _active: bool) {
+    fn followed_changed(&self, call: &Call) {
         let known = self.sensed();
-        self.now(known);
+        self.now(known, call);
         // (Lying its new way: the move's wait is over.)
         if self.commanded.get().is_some_and(|c| Known::of(Some(c)) == known) {
             self.moves.set(self.moves.get() + 1);
@@ -335,7 +355,7 @@ impl Object for Turnout {
             // (Posted by the thread a move_time waits on, the kit's level 6: not listed for scripts.)
             "turnout_moved" => {
                 let n = call.int(0)? as u64;
-                self.moved(n);
+                self.moved(n, call);
                 Ok(Value::Null)
             }
             other => Err(call.unknown_function("turnout", other, FUNCS)),

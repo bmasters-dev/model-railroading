@@ -8,10 +8,13 @@
 //! `leah --install-addon https://github.com/bmasters-dev/model-railroading` puts it.
 
 mod base;
+mod block;
 mod board;
 mod consist;
 mod dcc;
 mod definitions;
+mod layout;
+mod light;
 mod makers;
 mod phone;
 mod programmer;
@@ -29,7 +32,7 @@ fn needs(name: &str, options: &[(String, Value, i64)]) -> Vec<Needs> {
         "dcc_base" if options.iter().any(|(n, v, _)| n == "simulate" && *v == Value::Bool(true)) => vec![],
         "dcc_base" | "dcc_ports" => vec![Needs::Device],
         "load_dcc_program" => vec![Needs::Programs, Needs::Device],
-        "read_decoder_definition_file" | "roster" => vec![Needs::Files],
+        "read_decoder_definition_file" | "roster" | "write_layout_file" | "read_layout_file" => vec![Needs::Files],
         _ => vec![],
     }
 }
@@ -63,6 +66,11 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("phone_throttle_server", &[Needs::Web], phone::new_server as Function),
             ("turnout", &[], turnout::new_turnout as Function),
             ("sensor", &[], sensor::new_sensor as Function),
+            ("light", &[], light::new_light as Function),
+            ("block", &[], block::new_block as Function),
+            ("layout", &[], layout::new_layout as Function),
+            ("write_layout_file", &[Needs::Files], layout::write_layout_file as Function),
+            ("read_layout_file", &[Needs::Files], layout::read_layout_file as Function),
         ],
         needs: Some(needs),
         objects: vec![
@@ -76,6 +84,9 @@ pub extern "C" fn leah_addon_entry(level: u32) -> *const leah_addon_kit::raw::Ad
             ("dcc_program_job", &["port", "role", "board", "finished", "succeeded", "message"], &["wait"], &["on_finished"]),
             ("turnout", &["address", "name", "state", "commanded", "inverted", "feedback", "sensors", "move_time", "locked", "base"], &["close", "throw", "toggle"], &["on_changed", "on_mismatch"]),
             ("sensor", &["pin", "name", "state", "active", "inverted", "pull", "active_delay", "inactive_delay", "base"], &["simulate"], &["on_changed", "on_active", "on_inactive"]),
+            ("light", &["address", "name", "on", "inverted", "following", "base"], &["toggle", "pulse", "follow"], &["on_changed"]),
+            ("block", &["name", "sensor", "state", "occupied", "train"], &[], &["on_changed", "on_occupied", "on_cleared"]),
+            ("layout", &["names", "count", "turnouts", "sensors", "lights", "blocks"], &["add", "find", "remove"], &[]),
             ("phone_throttle_server", &["name", "port", "running", "clients", "heartbeat", "turnouts", "routes", "clock", "base", "roster"], &["add_turnout", "set_turnout", "remove_turnout", "add_route", "set_route", "remove_route", "set_clock", "stop_clock", "message", "close"], &["on_client", "on_client_left", "on_turnout_request", "on_route_request"]),
         ],
         controls: vec![],

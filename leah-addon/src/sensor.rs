@@ -23,10 +23,36 @@ const OWN_PINS: [u8; 10] = [3, 8, 9, 11, 12, 13, 54, 55, 58, 59];
 /// The longest delay a sensor takes (a minute).
 const MOST_DELAY: i64 = 60_000;
 
-/// What a sensor tells the objects that follow it (a turnout's feedback, a block), on the script's
-/// thread, after its own events.
+/// What a layout object tells the objects that follow it (a turnout following its sensors, a block its
+/// sensor, a light a sensor or a turnout), on the script's thread, after its own events: they read
+/// its state again.
 pub(crate) trait Follower {
-    fn sensor_changed(&self, sensor: &Sensor, active: bool);
+    fn followed_changed(&self, call: &Call);
+}
+
+/// The objects following one, each told when it changes.
+#[derive(Default)]
+pub(crate) struct Followers(RefCell<Vec<Weak<dyn Follower>>>);
+
+impl Followers {
+    pub(crate) fn add(&self, who: Weak<dyn Follower>) {
+        let mut f = self.0.borrow_mut();
+        f.retain(|w| w.strong_count() > 0);
+        f.push(who);
+    }
+
+    pub(crate) fn tell(&self, call: &Call) {
+        let followers: Vec<_> = self.0.borrow().iter().filter_map(Weak::upgrade).collect();
+        for f in followers {
+            f.followed_changed(call);
+        }
+    }
+}
+
+/// An object as a follower another keeps (a weak hold: following keeps nothing alive).
+pub(crate) fn as_follower<T: Follower + 'static>(made: &Rc<T>) -> Weak<dyn Follower> {
+    let me: Rc<dyn Follower> = made.clone();
+    Rc::downgrade(&me)
 }
 
 pub struct Sensor {
@@ -43,7 +69,7 @@ pub struct Sensor {
     state: Cell<Option<bool>>,
     /// Counts the changes waiting out a delay: a wait whose count is no longer the newest is over.
     waits: Cell<u64>,
-    followers: RefCell<Vec<Weak<dyn Follower>>>,
+    followers: Followers,
     events: Events,
 }
 
@@ -121,7 +147,7 @@ pub fn new_sensor(call: &mut Call) -> Result<Value, Error> {
         raw: Cell::new(starts),
         state: Cell::new(starts),
         waits: Cell::new(0),
-        followers: RefCell::new(Vec::new()),
+        followers: Followers::default(),
         events,
     });
     if let (Some(base), Some(pin)) = (&base, pin) {
@@ -145,15 +171,30 @@ impl Sensor {
         self.state.get()
     }
 
+    /// How it is made, for a layout file: its constructor's settings.
+    pub(crate) fn settings(&self) -> Value {
+        let mut pairs = vec![("name", Value::from(self.name.as_str()))];
+        if let Some(p) = self.pin {
+            pairs.push(("pin", Value::from(i64::from(p))));
+            pairs.push(("pull", Value::from(self.pull)));
+        }
+        pairs.push(("inverted", Value::from(self.inverted)));
+        pairs.push(("active_delay", Value::from(self.active_delay.get())));
+        pairs.push(("inactive_delay", Value::from(self.inactive_delay.get())));
+        Value::map(pairs)
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Its base station was closed: nothing more comes from its pin.
     pub(crate) fn base_closed(&self) {
         self.events.keep_running(false);
     }
 
     pub(crate) fn follow(&self, who: Weak<dyn Follower>) {
-        let mut f = self.followers.borrow_mut();
-        f.retain(|w| w.strong_count() > 0);
-        f.push(who);
+        self.followers.add(who);
     }
 
     fn word(state: Option<bool>) -> &'static str {
@@ -165,12 +206,12 @@ impl Sensor {
     }
 
     /// The pin's level the board said (true: high).
-    pub(crate) fn heard(&self, high: bool) {
-        self.raw_now(high == self.inverted);
+    pub(crate) fn heard(&self, high: bool, call: &Call) {
+        self.raw_now(high == self.inverted, call);
     }
 
     /// What the pin (or `simulate()`) says now: taken at once, or once it has lasted its delay.
-    fn raw_now(&self, active: bool) {
+    fn raw_now(&self, active: bool, call: &Call) {
         self.raw.set(Some(active));
         // (A change still waiting is over: this one is newer.)
         let wait = self.waits.get() + 1;
@@ -181,7 +222,7 @@ impl Sensor {
         // no longer the newest.)
         if self.state.get() == Some(active) || delay == 0 || self.state.get().is_none() {
             self.events.keep_working(false);
-            self.settle(active);
+            self.settle(active, call);
             return;
         }
         let events = self.events.clone();
@@ -193,17 +234,14 @@ impl Sensor {
     }
 
     /// Its state changed: its events, then the objects that follow it.
-    fn settle(&self, active: bool) {
+    fn settle(&self, active: bool, call: &Call) {
         if self.state.replace(Some(active)) == Some(active) {
             return;
         }
         let word = Self::word(Some(active));
         self.events.fire("on_changed", vec![Value::from(word)]);
         self.events.fire(if active { "on_active" } else { "on_inactive" }, vec![]);
-        let followers: Vec<_> = self.followers.borrow().iter().filter_map(Weak::upgrade).collect();
-        for f in followers {
-            f.sensor_changed(self, active);
-        }
+        self.followers.tell(call);
     }
 
     /// What the board said since the script's last call, taken in (its posts may still be on the way).
@@ -265,7 +303,7 @@ impl Object for Sensor {
                     other => return Err(Error::type_error(format!("sensor.simulate() takes \"active\" or \"inactive\" (or true or false), not {}", describe(other)))),
                 };
                 self.catch_up(call);
-                self.raw_now(active);
+                self.raw_now(active, call);
                 Ok(Value::Null)
             }
             // (Posted by the thread a delay waits on, the kit's level 6: not listed for scripts.)
@@ -274,7 +312,7 @@ impl Object for Sensor {
                 if wait == self.waits.get() {
                     self.events.keep_working(false);
                     if let Some(active) = self.raw.get() {
-                        self.settle(active);
+                        self.settle(active, call);
                     }
                 }
                 Ok(Value::Null)

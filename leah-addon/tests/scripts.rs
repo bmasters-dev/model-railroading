@@ -2545,3 +2545,141 @@ one mismatch: told closed, lies thrown
 "#
     );
 }
+
+#[test]
+fn lights_switch_and_follow_and_blocks_hold_their_train() {
+    // A light switched on and off, toggled, following a sensor, a turnout, and a block, and pulsed;
+    // a block occupied by its sensor or by the script, holding its train until it clears.
+    let script = r#"$base = dcc_base(simulate: true)
+$base.power = true
+$lamp = light(30, name: "Station lamp")
+$lamp.on = true
+print([$lamp.on, $base.accessory(30)])
+$lamp.toggle()
+print([$lamp.on, $base.accessory(30)])
+$s = sensor(22)
+$block = block("East siding", sensor: $s)
+$loco = locomotive(3)
+print([$block.state, $block.occupied, $block.train])
+$block.on_cleared = function($train) {
+    print("cleared, the train was " + to_text($train.address))
+}
+$block.on_occupied = function() {
+    print("occupied")
+}
+$indicator = light(31)
+$indicator.follow($block)
+$s.simulate("active")
+$block.train = $loco
+print([$block.state, $block.train.address, $indicator.on, $indicator.following.name])
+$s.simulate("inactive")
+print([$block.state, $block.train, $indicator.on])
+$t = turnout(5)
+$signal = light(32)
+$signal.follow($t, when: "closed")
+$t.close()
+print($signal.on)
+$t.throw()
+print($signal.on)
+$plain = block("Yard")
+$plain.occupied = true
+$plain.train = "Local freight"
+print([$plain.state, $plain.train])
+$plain.occupied = false
+print($plain.train)
+try {
+    $block.occupied = true
+} catch $e {
+    print($e.message)
+}
+$lamp.on_changed = function($on) {
+    print("lamp " + to_text($on))
+}
+$lamp.pulse(200)
+"#;
+    let run = run("lights-blocks", script);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        r#"[true, "closed"]
+[false, "thrown"]
+["free", false, null]
+["occupied", 3, true, "East siding"]
+["free", null, false]
+true
+false
+["occupied", "Local freight"]
+
+block East siding's `occupied` comes from its sensor: it can be read but not set
+lamp true
+lamp false
+occupied
+cleared, the train was 3
+lamp true
+lamp false
+"#
+    );
+}
+
+#[test]
+fn a_layout_finds_its_objects_by_name_and_is_saved_and_read_back() {
+    let path = std::env::temp_dir().join(format!("model-railroading-layout-{}.json", std::process::id()));
+    let script = format!(
+        r#"$base = dcc_base(simulate: true)
+$layout = layout()
+$s = sensor(22, name: "East siding detector", inactive_delay: 1500)
+$points = sensor(23, name: "Yard points")
+$yard = turnout(12, name: "Yard lead", sensor: $points)
+$cross = turnout(13, name: "Crossover", inverted: true, move_time: 2000)
+$east = block("East siding", sensor: $s)
+$lamp = light(30, name: "Siding lamp")
+$lamp.follow($east)
+$reset = sensor(name: "Reset")
+$layout.add($s, $points, $yard, $cross, $east, $lamp, $reset)
+$layout.add($yard)
+print([$layout.count, count($layout.turnouts), count($layout.sensors), count($layout.lights), count($layout.blocks)])
+print($layout.find("Yard lead").address)
+print($layout.find("yard led"))
+try {{
+    $layout.add(turnout(14, name: "Yard lead"))
+}} catch $e {{
+    print($e.message)
+}}
+write_layout_file($layout, "{path}")
+$again = read_layout_file("{path}")
+print($again.names)
+$y = $again.find("Yard lead")
+print([$y.address, $y.feedback, $y.sensors[0].name, $again.find("Crossover").inverted, $again.find("Crossover").move_time])
+print([$again.find("East siding").sensor.name, $again.find("Siding lamp").following.name, $again.find("East siding detector").inactive_delay, $again.find("Reset").pin])
+$again.find("East siding detector").simulate("active")
+print($again.find("Siding lamp").on)
+print($again.remove("Reset"), $again.remove("Reset"), $again.count)
+$alone = layout()
+$alone.add($yard)
+try {{
+    write_layout_file($alone, "{path}.2")
+}} catch $e {{
+    print($e.message)
+}}
+"#,
+        path = path.display()
+    );
+    let run = run("layout", &script);
+    let _ = std::fs::remove_file(&path);
+    assert!(run.success, "{}", run.stderr);
+    assert_eq!(
+        run.stdout,
+        r#"[7, 2, 3, 1, 1]
+12
+
+layout.add(): the layout has a turnout named "Yard lead" already: each name is used once
+["East siding detector", "Yard points", "Reset", "Yard lead", "Crossover", "East siding", "Siding lamp"]
+[12, "one_sensor", "Yard points", true, 2000]
+["East siding detector", "East siding", 1500, null]
+true
+true false 6
+write_layout_file(): the turnout "Yard lead" reads "Yard points", which isn't in the layout: add it too
+"#
+    );
+    assert!(run.stderr.contains("the layout has nothing named \"yard led\": did you mean \"Yard lead\"?"), "{}", run.stderr);
+}

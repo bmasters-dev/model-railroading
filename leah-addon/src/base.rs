@@ -268,7 +268,7 @@ impl DccBase {
             let sensors: Vec<_> = self.sensors.borrow().iter().filter_map(Weak::upgrade).collect();
             for (pin, high) in pins {
                 for s in sensors.iter().filter(|s| s.pin() == Some(pin)) {
-                    s.heard(high);
+                    s.heard(high, call);
                 }
             }
         }
@@ -411,7 +411,6 @@ impl DccBase {
         self.send_times(packet, meaning, None, times, call)
     }
 
-    /// The base station made last, the one a locomotive or consist runs on by default.
     /// Watches one of the board's pins for a sensor (on the simulated base station, only noted):
     /// the board says its level at once and whenever it changes. A board running the older program
     /// (6, from before sensors) is asked to load the new one.
@@ -431,6 +430,7 @@ impl DccBase {
         Ok(())
     }
 
+    /// The base station made last, the one a locomotive or consist runs on by default.
     pub(crate) fn last() -> Option<Rc<DccBase>> {
         LAST.with(|l| l.borrow().upgrade())
     }
